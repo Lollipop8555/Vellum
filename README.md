@@ -162,3 +162,9 @@ scripts/      vendor-engines.mjs：同步 / 拉取 / 校验
 ## 隐私
 
 没有服务端。文件内容、历史记录、快照全部留在浏览器本地存储中，清除站点数据即全部消失。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 lollipop
+
+`vendor/` 下是 CodeMirror、Monaco 等引擎的源码副本，遵循各自的上游许可证（MIT / Apache-2.0），版本清单见 `vendor/VERSIONS.json`。

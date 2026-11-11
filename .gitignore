@@ -5,6 +5,7 @@
 plans
 
 node_modules/
-dist/
+# 只忽略根目录的构建产物；vendor/**/dist 是入库的引擎源码，不能一起忽略
+/dist/
 *.local
 *.log
