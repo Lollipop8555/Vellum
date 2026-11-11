@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "paths": {
+      "@codemirror/*": ["./vendor/@codemirror/*"],
+      "@lezer/*": ["./vendor/@lezer/*"],
+      "@marijn/*": ["./vendor/@marijn/*"],
+      "codemirror": ["./vendor/codemirror"],
+      "style-mod": ["./vendor/style-mod"],
+      "w3c-keyname": ["./vendor/w3c-keyname"],
+      "crelt": ["./vendor/crelt"],
+      "monaco-editor": ["./vendor/monaco-editor"],
+      "monaco-editor/*": ["./vendor/monaco-editor/*"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

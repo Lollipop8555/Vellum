@@ -1,2 +1,10 @@
 .idea/
 .vscode/
+.DS_Store
+
+plans
+
+node_modules/
+dist/
+*.local
+*.log

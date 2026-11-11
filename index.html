@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#1a1a1c" />
+    <title>Vellum</title>
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+  </head>
+  <body>
+    <div class="workbench" id="workbench">
+      <!-- 顶部岛屿 -->
+      <header class="island topbar" id="topbar">
+        <div class="brand" title="Vellum">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M6 3.5h8.2L19 8.3V20.5H6z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linejoin="round"
+            />
+            <path d="M14 3.6V8.4h4.6" fill="none" stroke="currentColor" stroke-width="1.2" />
+            <path d="M9 12h7M9 15.5h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+          </svg>
+          <span class="brand-name">Vellum</span>
+        </div>
+
+        <div class="top-actions">
+          <button class="btn btn-primary" id="importBtn" data-i18n="action.import"></button>
+
+          <div class="seg" id="engineSeg" role="group" data-i18n-title="action.engine">
+            <button class="seg-item is-active" data-engine="cm">CodeMirror</button>
+            <button class="seg-item" data-engine="monaco">Monaco</button>
+          </div>
+
+          <button class="btn btn-ghost" id="langBtn" title="Language">中</button>
+          <button class="btn btn-ghost icon-only" id="themeBtn" data-i18n-title="action.theme"></button>
+          <button class="btn btn-ghost icon-only" id="helpBtn" data-i18n-title="action.help">?</button>
+        </div>
+      </header>
+
+      <!-- 主体 -->
+      <div class="body" id="body">
+        <!-- 左竖条 -->
+        <aside class="island rail rail-left">
+          <button class="rail-btn" data-drawer="files" data-i18n-title="rail.files">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="6.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path d="M10 6.2V10l2.6 1.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button class="rail-btn" data-drawer="snapshots" data-i18n-title="rail.snapshots">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 3.4 17 7l-7 3.6L3 7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+              <path d="M3.4 10.6 10 14l6.6-3.4M3.4 13.9 10 17.3l6.6-3.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity=".7" />
+            </svg>
+          </button>
+        </aside>
+
+        <!-- 编辑器岛屿 -->
+        <main class="island editor-island" id="editorIsland">
+          <header class="editor-head" id="editorHead">
+            <span class="file-name" id="fileName" data-i18n="editor.noFile"></span>
+            <span class="file-meta" id="fileMeta"></span>
+            <span class="dirty-dot" id="dirtyDot" hidden></span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost" id="formatBtn" data-i18n="action.format" disabled></button>
+            <button class="btn btn-primary" id="saveBtn" data-i18n="action.save" disabled></button>
+            <button class="btn btn-ghost icon-only" id="moreBtn" data-i18n-title="action.more">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <circle cx="5" cy="10" r="1.4" fill="currentColor" />
+                <circle cx="10" cy="10" r="1.4" fill="currentColor" />
+                <circle cx="15" cy="10" r="1.4" fill="currentColor" />
+              </svg>
+            </button>
+          </header>
+
+          <div class="editor-host" id="editorHost"></div>
+
+          <div class="empty-state" id="emptyState">
+            <div class="empty-card">
+              <svg class="empty-icon" viewBox="0 0 48 48" aria-hidden="true">
+                <path d="M13 7h14l8 8v26H13z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+                <path d="M27 7.4V15h7.6" fill="none" stroke="currentColor" stroke-width="1.4" />
+                <path d="M24 22v12M19.5 29.5 24 34l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <h1 data-i18n="empty.title"></h1>
+              <p data-i18n="empty.hint"></p>
+              <div class="empty-actions">
+                <button class="btn btn-primary" id="emptyPickBtn" data-i18n="action.pick"></button>
+                <button class="btn btn-ghost" id="emptyPasteBtn" data-i18n="action.paste"></button>
+              </div>
+              <p class="empty-privacy" data-i18n="empty.privacy"></p>
+            </div>
+          </div>
+        </main>
+
+        <!-- 右竖条 -->
+        <aside class="island rail rail-right">
+          <button class="rail-btn" id="previewBtn" data-i18n-title="rail.preview">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M2.4 10S5.4 4.8 10 4.8 17.6 10 17.6 10 14.6 15.2 10 15.2 2.4 10 2.4 10z" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <circle cx="10" cy="10" r="2.4" fill="none" stroke="currentColor" stroke-width="1.3" />
+            </svg>
+          </button>
+          <button class="rail-btn" id="toolsBtn" data-i18n-title="rail.tools">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M12.8 3.4a4 4 0 0 0-4.6 5.4l-4.4 4.4a1.6 1.6 0 0 0 2.2 2.2l4.4-4.4a4 4 0 0 0 5.4-4.6l-2.3 2.3-2.3-.4-.4-2.3z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </aside>
+
+        <!-- 左侧抽屉（悬浮，两阶段动画） -->
+        <aside class="drawer" id="drawer" aria-hidden="true">
+          <div class="drawer-head">
+            <div class="drawer-tabs" id="drawerTabs">
+              <button class="tab is-active" data-tab="files" data-i18n="rail.files"></button>
+              <button class="tab" data-tab="snapshots" data-i18n="rail.snapshots"></button>
+            </div>
+            <button class="btn btn-ghost icon-only" id="drawerClose" title="Esc">×</button>
+          </div>
+          <div class="drawer-search">
+            <input id="drawerSearch" type="search" data-i18n-placeholder="drawer.search" />
+          </div>
+          <div class="drawer-list" id="drawerList"></div>
+          <div class="drawer-foot" id="drawerFoot"></div>
+        </aside>
+
+        <!-- 右侧预览（停靠） -->
+        <aside class="island panel-right" id="rightPanel">
+          <div class="panel-head">
+            <span data-i18n="panel.preview"></span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost icon-only" id="previewPrint" data-i18n-title="action.print">⎙</button>
+            <button class="btn btn-ghost icon-only" id="previewClose">×</button>
+          </div>
+          <div class="markdown-body" id="previewBody"></div>
+        </aside>
+      </div>
+
+      <!-- 底部状态岛 -->
+      <footer class="island statusbar" id="statusbar">
+        <span class="st" id="stCursor">—</span>
+        <span class="st-sep"></span>
+        <span class="st clickable" id="stEncoding">UTF-8</span>
+        <span class="st-sep"></span>
+        <span class="st clickable" id="stEol">LF</span>
+        <span class="st-sep"></span>
+        <span class="st" id="stCount"></span>
+        <span class="spacer"></span>
+        <span class="st" id="stCache"></span>
+        <span class="st-sep"></span>
+        <span class="st" id="stEngine">CodeMirror</span>
+        <span class="st-badge" id="stReadonly" hidden data-i18n="status.readonly"></span>
+      </footer>
+    </div>
+
+    <input type="file" id="filePicker" hidden />
+    <div class="drop-overlay" id="dropOverlay" hidden>
+      <div class="drop-card" data-i18n="empty.drop"></div>
+    </div>
+    <div class="toasts" id="toasts"></div>
+    <div class="dialog-layer" id="dialogLayer" hidden></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

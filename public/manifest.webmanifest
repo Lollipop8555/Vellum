@@ -1,0 +1,25 @@
+{
+  "name": "Vellum",
+  "short_name": "Vellum",
+  "description": "Local-first browser text editor with swappable engines",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#131315",
+  "theme_color": "#131315",
+  "lang": "en",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
