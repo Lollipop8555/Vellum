@@ -113,7 +113,8 @@ function lcs(a: string[], b: string[]): Op[] {
 
 function splitLines(text: string): string[] {
   if (text === '') return []
-  const lines = text.split('\n')
+  // 统一换行：CRLF 与 LF 的两个文件不该每一行都算改动
+  const lines = text.split(/\r?\n/)
   if (lines[lines.length - 1] === '') lines.pop()
   return lines
 }

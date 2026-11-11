@@ -4,6 +4,9 @@
    ============================================================ */
 
 :root {
+  /* 让原生滚动条、表单控件跟随主题，否则深色下轨道仍是亮色 */
+  color-scheme: dark;
+
   /* 尺寸 */
   --gap: 6px;
   --radius: 10px;
@@ -12,7 +15,10 @@
   --status-h: 24px;
   --rail-w: 40px;
   --drawer-w: 264px;
-  --panel-w: 380px;
+  --panel-w: 440px;
+  /* 与 app.ts 里 PANEL_MIN / PANEL_MAX 保持一致 */
+  --panel-min-w: 280px;
+  --panel-max-w: 760px;
   --ui-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'PingFang SC',
     'Microsoft YaHei', sans-serif;
   --mono-font: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
@@ -34,7 +40,12 @@
   --c-danger: #e5534b;
   --c-add: rgba(77, 158, 106, 0.16);
   --c-del: rgba(229, 83, 75, 0.14);
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --c-find: rgba(217, 160, 91, 0.22);
+  --c-find-active: rgba(217, 160, 91, 0.5);
+  /* 8 位 hex：CSS 与 Monaco 主题都能解析，rgba() 在 Monaco 里会被判为无效色 */
+  --c-scroll: #d8d8de29;
+  --c-scroll-hover: #d8d8de4d;
+  /* 只有浮层用阴影；平铺的 island 靠描边分块 */
   --shadow-drawer: 0 8px 28px rgba(0, 0, 0, 0.45);
 
   /* 语法着色（低饱和，两个引擎共用） */
@@ -48,6 +59,8 @@
 }
 
 :root[data-theme='light'] {
+  color-scheme: light;
+
   --c-canvas: #e8e8eb;
   --c-island: #fcfcfd;
   --c-island-2: #f1f1f4;
@@ -63,7 +76,10 @@
   --c-danger: #c8372f;
   --c-add: rgba(46, 140, 82, 0.14);
   --c-del: rgba(200, 55, 47, 0.1);
-  --shadow: 0 1px 2px rgba(20, 20, 30, 0.1);
+  --c-find: rgba(169, 108, 0, 0.18);
+  --c-find-active: rgba(169, 108, 0, 0.4);
+  --c-scroll: #1e1e232e;
+  --c-scroll-hover: #1e1e2352;
   --shadow-drawer: 0 10px 30px rgba(20, 20, 30, 0.18);
 
   --syn-key: #8b3fc4;
@@ -117,6 +133,9 @@ select {
 
 .workbench {
   display: grid;
+  /* minmax(0, 1fr) 而不是默认的 auto：auto 列会被内容的 min-content 撑开，
+     Monaco 会给 .monaco-editor 写死像素宽度，那条宽度会把整列推到视口之外 */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--topbar-h) 1fr var(--status-h);
   gap: var(--gap);
   padding: var(--gap);
@@ -124,10 +143,10 @@ select {
 }
 
 .island {
+  /* 分块靠描边与底色区分，不叠阴影，避免每块都像浮起来的卡片 */
   background: var(--c-island);
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
 }
 
 /* ---------- 顶栏 ---------- */
@@ -144,6 +163,7 @@ select {
   align-items: center;
   gap: 7px;
   padding-right: 6px;
+  min-width: 0;
   color: var(--c-text);
 }
 
@@ -157,6 +177,17 @@ select {
   font-size: 13.5px;
   font-weight: 600;
   letter-spacing: 0.3px;
+  min-width: 0;
+  max-width: min(46vw, 520px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 顶栏标题旁未保存圆点，比编辑器里的略小一点 */
+.brand .dirty-dot {
+  width: 5px;
+  height: 5px;
 }
 
 .top-actions {
@@ -192,6 +223,41 @@ select {
 .btn.icon-only {
   width: 26px;
   padding: 0;
+}
+
+/* more 菜单里的设置行（字号、强调色） */
+.menu-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--c-border-soft);
+}
+
+.menu-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 4px 0 10px;
+  font-size: 12px;
+  color: var(--c-dim);
+}
+
+.menu-row-label {
+  margin-right: auto;
+}
+
+.menu-row-value {
+  min-width: 34px;
+  text-align: center;
+  color: var(--c-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-row .menu-step {
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .btn:hover:not(:disabled) {
@@ -231,6 +297,13 @@ select {
   color: var(--c-text);
 }
 
+/* 主题按钮：暗色显示太阳（点一下转亮色），亮色显示月亮 */
+/* 图标表示「当前处在什么模式」：浅色戴太阳、深色看月亮 */
+:root[data-theme='dark'] .theme-icon-sun,
+:root[data-theme='light'] .theme-icon-moon {
+  display: none;
+}
+
 .btn-danger {
   color: var(--c-danger);
 }
@@ -267,6 +340,8 @@ select {
 .body {
   display: flex;
   gap: var(--gap);
+  /* grid item 默认 min-width: auto，会被编辑器内部的固定像素宽度撑开 */
+  min-width: 0;
   min-height: 0;
   position: relative;
 }
@@ -319,30 +394,6 @@ select {
   position: relative;
 }
 
-.editor-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--c-border-soft);
-  flex: 0 0 auto;
-}
-
-.file-name {
-  font-weight: 550;
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-meta {
-  color: var(--c-faint);
-  font-size: 12px;
-  font-family: var(--mono-font);
-}
-
 .dirty-dot {
   width: 6px;
   height: 6px;
@@ -353,6 +404,8 @@ select {
 
 .editor-host {
   flex: 1;
+  /* 交叉轴也要允许收缩，否则 Monaco 的固定宽度会顶住父级 */
+  min-width: 0;
   min-height: 0;
   position: relative;
   overflow: hidden;
@@ -363,28 +416,28 @@ select {
   height: 100%;
 }
 
-/* 编辑器内滚动条 */
-.cm-scroller::-webkit-scrollbar,
-.monaco-scrollable-element::-webkit-scrollbar,
-.drawer-list::-webkit-scrollbar,
-.markdown-body::-webkit-scrollbar {
+/* 滚动条：轨道必须显式透明，否则 Chromium 默认轨道是白底，
+   深色主题下会看到一条白色长条。滑块颜色与 Monaco 主题共用 --c-scroll。 */
+::-webkit-scrollbar {
   width: 10px;
   height: 10px;
+  background: transparent;
 }
 
-.cm-scroller::-webkit-scrollbar-thumb,
-.monaco-scrollable-element::-webkit-scrollbar-thumb,
-.drawer-list::-webkit-scrollbar-thumb,
-.markdown-body::-webkit-scrollbar-thumb {
-  background: var(--c-border);
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--c-scroll);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
-.cm-scroller::-webkit-scrollbar-thumb:hover,
-.drawer-list::-webkit-scrollbar-thumb:hover {
-  background: var(--c-faint);
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-scroll-hover);
   background-clip: content-box;
 }
 
@@ -604,9 +657,12 @@ select {
 
 .drawer-foot {
   border-top: 1px solid var(--c-border-soft);
-  padding: 6px 10px;
-  color: var(--c-faint);
-  font-size: 11.5px;
+  padding: 8px;
+  flex: 0 0 auto;
+}
+
+.drawer-foot .btn {
+  width: 100%;
 }
 
 .list-empty {
@@ -619,11 +675,58 @@ select {
 /* ---------- 右侧面板 ---------- */
 
 .panel-right {
+  position: relative;
   width: var(--panel-w);
+  min-width: var(--panel-min-w);
+  max-width: min(var(--panel-max-w), calc(100% - 220px));
   flex: 0 0 var(--panel-w);
   display: none;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* 左侧拖拽条：命中区比视觉线宽，悬停/拖动时整条边亮起 */
+.panel-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 5;
+  cursor: col-resize;
+  outline: none;
+}
+
+.panel-resizer::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after,
+.panel-resizer.is-dragging::after {
+  background: var(--c-accent);
+}
+
+/* 拖动中面板浮起：脱离文档流，编辑区不跟着抖，松手才落定 */
+.panel-right.is-floating {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 0;
+  max-width: none;
+  z-index: 20;
+}
+
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .panel-right.is-open {
@@ -725,6 +828,27 @@ select {
   margin: 1.6em 0;
 }
 
+/* mermaid 图表：先显示源码，画好之后替换成图 */
+.mermaid-block {
+  margin: 1em 0;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-block .mermaid-source {
+  margin: 0;
+  text-align: left;
+}
+
+.mermaid-block.is-error .mermaid-source {
+  color: var(--c-danger);
+}
+
 /* ---------- 状态栏 ---------- */
 
 .statusbar {
@@ -737,6 +861,21 @@ select {
   font-family: var(--mono-font);
   overflow: hidden;
   white-space: nowrap;
+}
+
+/* 状态栏项目多，窄窗口先收掉最不关键的缓存与字数，避免右侧引擎/只读被裁掉 */
+@media (max-width: 1040px) {
+  #stCache {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  #stCount {
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 .st.clickable {
@@ -762,6 +901,21 @@ select {
   background: var(--c-island-2);
   color: var(--c-dim);
   font-size: 10.5px;
+}
+
+.st-badge.clickable {
+  cursor: pointer;
+}
+
+.st-badge.clickable:hover {
+  color: var(--c-text);
+}
+
+/* 高亮关：压暗，一眼能看出当前没上色 */
+.st-badge.is-off {
+  color: var(--c-faint);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--c-border);
 }
 
 /* ---------- 拖拽覆盖层 ---------- */
@@ -847,6 +1001,12 @@ select {
 
 .dialog.narrow {
   width: min(460px, 100%);
+}
+
+/* 左右分栏的对比需要横向空间，否则两侧各自只剩几个字 */
+.dialog.wide {
+  width: min(1180px, 100%);
+  max-height: 88vh;
 }
 
 .dialog-head {
@@ -956,54 +1116,147 @@ textarea.raw {
   margin-bottom: 12px;
 }
 
-/* ---------- Diff ---------- */
+/* 编解码工具：夹在输入框与输出框之间的动作行 */
+.tools-actions {
+  margin: 12px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--c-border-soft);
+  border-bottom: 1px solid var(--c-border-soft);
+}
+
+/* ---------- Diff（左右分栏） ---------- */
 
 .diff {
   font-family: var(--mono-font);
   font-size: 12px;
   border: 1px solid var(--c-border-soft);
   border-radius: var(--radius-sm);
-  overflow: hidden;
   max-height: 58vh;
-  overflow-y: auto;
+  overflow: auto;
 }
 
-.diff-line {
+/* 四列：基准行号 / 基准文本 / 当前行号 / 当前文本，两侧各占一半 */
+.diff-row,
+.diff-head {
   display: grid;
-  grid-template-columns: 52px 52px 1fr;
-  gap: 0;
-  padding: 1px 0;
-  white-space: pre-wrap;
-  word-break: break-all;
+  grid-template-columns: 3.4em minmax(0, 1fr) 3.4em minmax(0, 1fr);
+  align-items: stretch;
 }
 
-.diff-line > span:first-child,
-.diff-line > span:nth-child(2) {
+.diff-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--c-island-2);
+  border-bottom: 1px solid var(--c-border-soft);
+  color: var(--c-dim);
+  font-size: 11px;
+  line-height: 2;
+}
+
+.diff-head-cell {
+  padding: 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-head-cell.is-left {
+  grid-column: 1 / 3;
+}
+
+.diff-head-cell.is-right {
+  grid-column: 3 / 5;
+  border-left: 1px solid var(--c-border-soft);
+}
+
+.diff-row {
+  line-height: 1.55;
+}
+
+.diff-no {
   color: var(--c-faint);
   text-align: right;
-  padding-right: 8px;
+  padding-right: 6px;
   user-select: none;
+  font-variant-numeric: tabular-nums;
 }
 
-.diff-line > span:last-child {
-  padding-right: 10px;
+/* 右半边的行号当分界：一条竖线把两侧切开 */
+.diff-row > .diff-no:nth-of-type(3) {
+  border-left: 1px solid var(--c-border-soft);
 }
 
-.diff-line.add {
+.diff-text {
+  position: relative;
+  padding: 0 8px 0 1.5em;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 前缀不占宽度，两侧都有，保证文本起点对齐 */
+.diff-row.add > .diff-text:nth-of-type(4)::before {
+  content: '+';
+  position: absolute;
+  left: 0.5em;
+  color: var(--c-dim);
+}
+
+.diff-row.del > .diff-text:nth-of-type(2)::before {
+  content: '−';
+  position: absolute;
+  left: 0.5em;
+  color: var(--c-dim);
+}
+
+.diff-row.add {
   background: var(--c-add);
 }
 
-.diff-line.del {
+.diff-row.del {
   background: var(--c-del);
 }
 
-.diff-line.add > span:last-child::before {
-  content: '+ ';
-  color: var(--c-add);
+/* 空格子压暗一点，一眼看出这一行在另一侧不存在 */
+.diff-row.add > :is(.diff-no:nth-of-type(1), .diff-text:nth-of-type(2)),
+.diff-row.del > :is(.diff-no:nth-of-type(3), .diff-text:nth-of-type(4)) {
+  background: color-mix(in srgb, var(--c-canvas) 35%, transparent);
 }
 
-.diff-line.del > span:last-child::before {
-  content: '- ';
+.diff-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--c-faint);
+}
+
+/* 对比对象选择：一列文件名 + 体积，长名字截断 */
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.pick-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+
+.pick-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pick-meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--c-faint);
 }
 
 .diff-stat {
@@ -1041,11 +1294,136 @@ textarea.raw {
   .panel-right {
     display: block !important;
     width: 100%;
+    min-width: 0;
+    max-width: none;
     border: 0;
     box-shadow: none;
+  }
+
+  .panel-resizer {
+    display: none;
   }
 
   .panel-head {
     display: none;
   }
+}
+
+/* ---------------- 查找 / 替换 ---------------- */
+
+.findbar {
+  position: absolute;
+  /* 编辑区上方的标题栏已经去掉，浮层贴住顶边即可 */
+  top: 10px;
+  right: 16px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(440px, calc(100% - 32px));
+  padding: 8px;
+  background: var(--c-island-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-drawer);
+}
+
+.findbar[hidden] {
+  display: none;
+}
+
+.findbar-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.findbar input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-family: var(--mono-font);
+  font-size: 12px;
+  color: var(--c-text);
+  background: var(--c-island);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+
+.findbar input:focus {
+  border-color: var(--c-accent);
+}
+
+.findbar input.is-invalid {
+  border-color: var(--c-danger);
+}
+
+.findbar input::placeholder {
+  color: var(--c-faint);
+}
+
+.find-count {
+  min-width: 56px;
+  font-family: var(--mono-font);
+  font-size: 11px;
+  color: var(--c-faint);
+  text-align: right;
+}
+
+.find-count.is-error {
+  color: var(--c-danger);
+}
+
+.fb-btn {
+  height: 24px;
+  min-width: 24px;
+  padding: 0 5px;
+  font-family: var(--mono-font);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--c-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.fb-btn:hover:not(:disabled) {
+  background: var(--c-raised);
+  color: var(--c-text);
+}
+
+.fb-btn.is-on {
+  color: var(--c-accent);
+  background: var(--c-accent-weak);
+}
+
+.fb-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fb-btn.fb-text {
+  padding: 0 10px;
+  font-family: var(--ui-font);
+  font-size: 12px;
+}
+
+.fb-close {
+  font-size: 15px;
+}
+
+/* 两个引擎的高亮类名不同，颜色保持同一套 */
+.cm-find-match,
+.monaco-find-match {
+  background: var(--c-find);
+  border-radius: 2px;
+}
+
+.cm-find-active,
+.monaco-find-active {
+  background: var(--c-find-active);
+  border-radius: 2px;
 }

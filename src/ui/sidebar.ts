@@ -30,6 +30,8 @@ function iconBtn(label: string, cls = ''): HTMLButtonElement {
 
 export interface FileListHandlers {
   open(id: string): void
+  /** 以这个文件为基准，与当前文件对比 */
+  compare(id: string): void
   remove(id: string): void
 }
 
@@ -92,6 +94,16 @@ export function renderFileList(
 
     const actions = document.createElement('div')
     actions.className = 'item-actions'
+    // 当前文件自己不用比；有别的文件时才给一个「以它为基准对比」的入口
+    if (currentId && file.id !== currentId) {
+      const diff = iconBtn('≠')
+      diff.title = t('action.compare')
+      diff.onclick = (e) => {
+        e.stopPropagation()
+        handlers.compare(file.id)
+      }
+      actions.appendChild(diff)
+    }
     const del = iconBtn('×', 'danger')
     del.title = t('action.delete')
     del.onclick = (e) => {

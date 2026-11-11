@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#1a1a1c" />
+    <meta name="theme-color" content="#131315" />
     <title>Vellum</title>
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="manifest" href="./manifest.webmanifest" />
@@ -13,7 +13,7 @@
     <div class="workbench" id="workbench">
       <!-- 顶部岛屿 -->
       <header class="island topbar" id="topbar">
-        <div class="brand" title="Vellum">
+        <div class="brand" id="brand" title="Vellum">
           <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
             <path
               d="M6 3.5h8.2L19 8.3V20.5H6z"
@@ -25,11 +25,19 @@
             <path d="M14 3.6V8.4h4.6" fill="none" stroke="currentColor" stroke-width="1.2" />
             <path d="M9 12h7M9 15.5h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
           </svg>
-          <span class="brand-name">Vellum</span>
+          <span class="brand-name" id="titleText">Vellum</span>
+          <span class="dirty-dot" id="dirtyDot" hidden></span>
         </div>
 
         <div class="top-actions">
-          <button class="btn btn-primary" id="importBtn" data-i18n="action.import"></button>
+          <button class="btn btn-ghost icon-only" id="findBtn" data-i18n-title="action.find" disabled>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="9" cy="9" r="5.2" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M13 13l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button class="btn btn-ghost" id="formatBtn" data-i18n="action.format" disabled></button>
+          <button class="btn btn-primary" id="saveBtn" data-i18n="action.save" disabled></button>
 
           <div class="seg" id="engineSeg" role="group" data-i18n-title="action.engine">
             <button class="seg-item is-active" data-engine="cm">CodeMirror</button>
@@ -37,8 +45,35 @@
           </div>
 
           <button class="btn btn-ghost" id="langBtn" title="Language">中</button>
-          <button class="btn btn-ghost icon-only" id="themeBtn" data-i18n-title="action.theme"></button>
+          <button class="btn btn-ghost icon-only" id="themeBtn" data-i18n-title="action.theme">
+            <svg class="theme-icon-sun" viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="3.5" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path
+                d="M10 2.3v2.1M10 15.6v2.1M2.3 10h2.1M15.6 10h2.1M4.6 4.6l1.5 1.5M13.9 13.9l1.5 1.5M15.4 4.6l-1.5 1.5M6.1 13.9l-1.5 1.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+            </svg>
+            <svg class="theme-icon-moon" viewBox="0 0 20 20" aria-hidden="true">
+              <path
+                d="M13.9 12.6A5.7 5.7 0 0 1 7.4 6.1a5.7 5.7 0 1 0 6.5 6.5z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
           <button class="btn btn-ghost icon-only" id="helpBtn" data-i18n-title="action.help">?</button>
+          <button class="btn btn-ghost icon-only" id="moreBtn" data-i18n-title="action.more">
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="5" cy="10" r="1.4" fill="currentColor" />
+              <circle cx="10" cy="10" r="1.4" fill="currentColor" />
+              <circle cx="15" cy="10" r="1.4" fill="currentColor" />
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -62,23 +97,39 @@
 
         <!-- 编辑器岛屿 -->
         <main class="island editor-island" id="editorIsland">
-          <header class="editor-head" id="editorHead">
-            <span class="file-name" id="fileName" data-i18n="editor.noFile"></span>
-            <span class="file-meta" id="fileMeta"></span>
-            <span class="dirty-dot" id="dirtyDot" hidden></span>
-            <div class="spacer"></div>
-            <button class="btn btn-ghost" id="formatBtn" data-i18n="action.format" disabled></button>
-            <button class="btn btn-primary" id="saveBtn" data-i18n="action.save" disabled></button>
-            <button class="btn btn-ghost icon-only" id="moreBtn" data-i18n-title="action.more">
-              <svg viewBox="0 0 20 20" aria-hidden="true">
-                <circle cx="5" cy="10" r="1.4" fill="currentColor" />
-                <circle cx="10" cy="10" r="1.4" fill="currentColor" />
-                <circle cx="15" cy="10" r="1.4" fill="currentColor" />
-              </svg>
-            </button>
-          </header>
-
           <div class="editor-host" id="editorHost"></div>
+
+          <!-- 查找 / 替换：两个引擎共用，浮在编辑区右上角 -->
+          <div class="findbar" id="findBar" hidden>
+            <div class="findbar-row">
+              <input
+                id="findInput"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                data-i18n-placeholder="find.placeholder"
+              />
+              <span class="find-count" id="findCount">0 / 0</span>
+              <button class="fb-btn" id="findPrev" data-i18n-title="find.prev">↑</button>
+              <button class="fb-btn" id="findNext" data-i18n-title="find.next">↓</button>
+              <button class="fb-btn" id="findCase" data-i18n-title="find.case">Aa</button>
+              <button class="fb-btn" id="findWord" data-i18n-title="find.word">ab</button>
+              <button class="fb-btn" id="findRegex" data-i18n-title="find.regex">.*</button>
+              <button class="fb-btn" id="findReplaceToggle" data-i18n-title="find.toggleReplace">⇄</button>
+              <button class="fb-btn fb-close" id="findClose" data-i18n-title="action.close">×</button>
+            </div>
+            <div class="findbar-row" id="findReplaceRow" hidden>
+              <input
+                id="replaceInput"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                data-i18n-placeholder="find.replacePlaceholder"
+              />
+              <button class="fb-btn fb-text" id="findReplaceOne" data-i18n="find.replace"></button>
+              <button class="fb-btn fb-text" id="findReplaceAll" data-i18n="find.replaceAll"></button>
+            </div>
+          </div>
 
           <div class="empty-state" id="emptyState">
             <div class="empty-card">
@@ -98,12 +149,118 @@
           </div>
         </main>
 
+        <!-- 右侧预览（停靠，位于编辑区与右竖条之间） -->
+        <aside class="island panel-right" id="rightPanel">
+          <div
+            class="panel-resizer"
+            id="panelResizer"
+            role="separator"
+            aria-orientation="vertical"
+            data-i18n-title="panel.resize"
+            tabindex="0"
+          ></div>
+          <div class="panel-head">
+            <span data-i18n="panel.preview"></span>
+            <div class="spacer"></div>
+            <button class="btn btn-ghost icon-only" id="previewPrint" data-i18n-title="action.print">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M6.4 6.8V3.6h7.2v3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                <path
+                  d="M6.4 14.4H4.6A1.4 1.4 0 0 1 3.2 13V9.2a1.6 1.6 0 0 1 1.6-1.6h10.4a1.6 1.6 0 0 1 1.6 1.6V13a1.4 1.4 0 0 1-1.4 1.4h-1.8"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linejoin="round"
+                />
+                <rect x="6.4" y="11.4" width="7.2" height="5.2" rx="0.9" fill="none" stroke="currentColor" stroke-width="1.3" />
+              </svg>
+            </button>
+            <button class="btn btn-ghost icon-only" id="previewClose" data-i18n-title="action.close">
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M5.6 5.6l8.8 8.8M14.4 5.6l-8.8 8.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+          <div class="markdown-body" id="previewBody"></div>
+        </aside>
+
         <!-- 右竖条 -->
         <aside class="island rail rail-right">
-          <button class="rail-btn" id="previewBtn" data-i18n-title="rail.preview">
+          <button class="rail-btn" id="previewBtn" data-i18n-title="rail.preview" hidden>
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <path d="M2.4 10S5.4 4.8 10 4.8 17.6 10 17.6 10 14.6 15.2 10 15.2 2.4 10 2.4 10z" fill="none" stroke="currentColor" stroke-width="1.3" />
               <circle cx="10" cy="10" r="2.4" fill="none" stroke="currentColor" stroke-width="1.3" />
+            </svg>
+          </button>
+          <button
+            class="rail-btn"
+            id="transformsBtn"
+            data-doc-action
+            data-i18n-title="rail.transforms"
+            hidden
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path
+                d="M3.2 5.4h7.4M3.2 10h5.2M3.2 14.6h7.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+              <path
+                d="M14.8 4.6v10.8M12.6 6.8l2.2-2.2 2.2 2.2M17 13.2l-2.2 2.2-2.2-2.2"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+          <button class="rail-btn" id="statsBtn" data-doc-action data-i18n-title="rail.stats" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="6.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path
+                d="M10 9.1v4.4M10 6.6v.2"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <button class="rail-btn" id="diffBtn" data-doc-action data-i18n-title="rail.diff" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10.2" r="6.4" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path
+                d="M10 6.4v4l2.8 1.7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+          <button class="rail-btn" id="diffFileBtn" data-doc-action data-i18n-title="rail.diffFile" hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <rect
+                x="3.2"
+                y="5.6"
+                width="9.2"
+                height="9.2"
+                rx="1.3"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+              />
+              <path
+                d="M7.2 5.6v-.9c0-.7.6-1.3 1.3-1.3h6.4c.7 0 1.3.6 1.3 1.3v6.4c0 .7-.6 1.3-1.3 1.3h-.9"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+              />
             </svg>
           </button>
           <button class="rail-btn" id="toolsBtn" data-i18n-title="rail.tools">
@@ -126,24 +283,18 @@
             <input id="drawerSearch" type="search" data-i18n-placeholder="drawer.search" />
           </div>
           <div class="drawer-list" id="drawerList"></div>
-          <div class="drawer-foot" id="drawerFoot"></div>
+          <div class="drawer-foot" id="drawerFoot">
+            <button class="btn btn-primary" id="importBtn" data-i18n="action.import"></button>
+          </div>
         </aside>
 
-        <!-- 右侧预览（停靠） -->
-        <aside class="island panel-right" id="rightPanel">
-          <div class="panel-head">
-            <span data-i18n="panel.preview"></span>
-            <div class="spacer"></div>
-            <button class="btn btn-ghost icon-only" id="previewPrint" data-i18n-title="action.print">⎙</button>
-            <button class="btn btn-ghost icon-only" id="previewClose">×</button>
-          </div>
-          <div class="markdown-body" id="previewBody"></div>
-        </aside>
       </div>
 
       <!-- 底部状态岛 -->
       <footer class="island statusbar" id="statusbar">
         <span class="st" id="stCursor">—</span>
+        <span class="st-sep"></span>
+        <span class="st clickable" id="stLang" title="Syntax highlighting">—</span>
         <span class="st-sep"></span>
         <span class="st clickable" id="stEncoding">UTF-8</span>
         <span class="st-sep"></span>
@@ -154,7 +305,9 @@
         <span class="st" id="stCache"></span>
         <span class="st-sep"></span>
         <span class="st" id="stEngine">CodeMirror</span>
-        <span class="st-badge" id="stReadonly" hidden data-i18n="status.readonly"></span>
+        <span class="st-badge clickable" id="stHighlight" hidden></span>
+        <span class="st-badge" id="stLight" hidden data-i18n="status.light"></span>
+        <span class="st-badge" id="stReadonly" hidden></span>
       </footer>
     </div>
 

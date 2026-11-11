@@ -1,8 +1,8 @@
 /**
  * 抽屉两阶段动画：
  * 阶段一 只做 transform 位移（合成器，不重排）
- * 阶段二 动画结束后一次性给编辑区加等宽 padding，并调用一次 layout()
- * 关闭时顺序相反：先撤销 padding 并 layout 一次（面板仍盖住该区域），再滑出
+ * 阶段二 动画结束后一次性把编辑区左边距推开，让岛本身变窄，并调用一次 layout()
+ * 关闭时顺序相反：先撤销边距并 layout 一次（面板仍盖住该区域），再滑出
  */
 export class Drawer {
   private running: Animation | null = null
@@ -22,21 +22,25 @@ export class Drawer {
     return window.matchMedia('(prefers-reduced-motion: reduce)').matches
   }
 
-  /** 抽屉左边缘与编辑区左边缘的差值 */
-  private paddingFor(width: number): number {
+  /**
+   * 抽屉右缘到编辑区左缘需要推开的距离。
+   * 用 margin 而不是 padding：岛自身跟着变窄，编辑区的边框和背景不会留出一条空洞。
+   */
+  private insetFor(width: number): number {
     const host = this.editorEl.parentElement ?? document.body
+    const gap = Number.parseFloat(getComputedStyle(host).columnGap) || 0
     const delta = this.editorEl.getBoundingClientRect().left - host.getBoundingClientRect().left
-    return Math.max(0, width - delta)
+    return Math.max(0, width - delta + gap)
   }
 
   private commitOpen() {
     const w = this.panel.offsetWidth
-    this.editorEl.style.paddingLeft = `${this.paddingFor(w)}px`
+    this.editorEl.style.marginLeft = `${this.insetFor(w)}px`
     this.onLayout()
   }
 
   private commitClosed() {
-    this.editorEl.style.paddingLeft = '0px'
+    this.editorEl.style.marginLeft = '0px'
     this.onLayout()
   }
 

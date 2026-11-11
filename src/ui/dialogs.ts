@@ -23,6 +23,8 @@ export function openDialog(opts: {
   body: HTMLElement
   foot?: HTMLElement
   narrow?: boolean
+  /** 需要左右分栏的弹窗（对比）用宽版 */
+  wide?: boolean
   onClose?: () => void
 }): DialogHandle {
   const host = layer()
@@ -30,7 +32,7 @@ export function openDialog(opts: {
   host.innerHTML = ''
 
   const dialog = document.createElement('div')
-  dialog.className = `dialog${opts.narrow ? ' narrow' : ''}`
+  dialog.className = `dialog${opts.narrow ? ' narrow' : ''}${opts.wide ? ' wide' : ''}`
 
   const head = document.createElement('div')
   head.className = 'dialog-head'
@@ -131,6 +133,7 @@ export function helpDialog() {
     ['Shift + Alt + E', t('help.engine')],
     ['Shift + Alt + F', t('help.format')],
     ['Ctrl/Cmd + F', t('help.find')],
+    ['Ctrl/Cmd + Alt + F', t('help.replace')],
     ['?', t('help.help')],
   ]
   const grid = document.createElement('div')
@@ -174,8 +177,9 @@ export function toolsDialog() {
   output.placeholder = t('tools.output')
   output.readOnly = true
 
+  // 一排动作按钮夹在输入与输出之间：它们是对输入的一次性操作，不是模式选择
   const row = document.createElement('div')
-  row.className = 'toolbar-row'
+  row.className = 'toolbar-row tools-actions'
 
   const add = (label: string, fn: (v: string) => string) => {
     const b = document.createElement('button')
@@ -201,10 +205,42 @@ export function toolsDialog() {
     return r.ms === undefined ? '' : `${r.ms}\n${r.date}`
   })
 
-  wrap.append(row, input, output)
+  wrap.append(input, row, output)
   openDialog({ title: t('dialog.tools'), body: wrap })
 }
 
+/** 一次铺进 DOM 的差异行上限，超过就只留改动附近的内容 */
+const MAX_DIFF_ROWS = 4000
+
+/** 几万行 context 铺进 DOM 会直接卡死，超大差异只保留改动 ±2 行 */
+function trimRows(rows: ReturnType<typeof computeDiff>['rows']) {
+  if (rows.length <= MAX_DIFF_ROWS) return { rows, trimmed: false }
+  const keep = new Set<number>()
+  rows.forEach((row, i) => {
+    if (row.kind === 'context') return
+    for (let k = Math.max(0, i - 2); k <= Math.min(rows.length - 1, i + 2); k++) keep.add(k)
+  })
+  const picked = [...keep].sort((a, b) => a - b).map((i) => rows[i])
+  return { rows: picked.slice(0, MAX_DIFF_ROWS), trimmed: true }
+}
+
+function noCell(text: string): HTMLSpanElement {
+  const span = document.createElement('span')
+  span.className = 'diff-no'
+  span.textContent = text
+  return span
+}
+
+function textCell(text: string, showFull: boolean): HTMLSpanElement {
+  const span = document.createElement('span')
+  span.className = 'diff-text'
+  span.textContent = text
+  // 长行被省略号吃掉时，至少悬停能看到全文
+  if (showFull && text.length > 90) span.title = text
+  return span
+}
+
+/** 左右分栏：每一行同时给出基准侧与当前侧，删行左边有字、右边空，增行反过来 */
 export function diffDialog(baselineLabel: string, baseline: string, current: string) {
   const wrap = document.createElement('div')
   const { rows, added, removed } = computeDiff(baseline, current)
@@ -216,23 +252,54 @@ export function diffDialog(baselineLabel: string, baseline: string, current: str
       ? t('diff.identical')
       : `${t('diff.other', { name: baselineLabel })} · ${t('diff.added', { n: added })} · ${t('diff.removed', { n: removed })}`
 
+  // 内容完全一致就不铺任何行，省得给几十 MB 的文件白建节点
+  if (added === 0 && removed === 0) {
+    wrap.append(stat)
+    openDialog({ title: t('dialog.diff'), body: wrap, wide: true })
+    return
+  }
+
+  const { rows: shown, trimmed } = trimRows(rows)
+
   const box = document.createElement('div')
-  box.className = 'diff'
+  box.className = 'diff diff-split'
+
+  const head = document.createElement('div')
+  head.className = 'diff-head'
+  const left = document.createElement('span')
+  left.className = 'diff-head-cell is-left'
+  left.textContent = `${t('diff.baseline')} · ${baselineLabel}`
+  const right = document.createElement('span')
+  right.className = 'diff-head-cell is-right'
+  right.textContent = t('diff.current')
+  head.append(left, right)
+  box.appendChild(head)
+
   const frag = document.createDocumentFragment()
-  for (const row of rows) {
+  for (const row of shown) {
+    const isAdd = row.kind === 'add'
+    const isDel = row.kind === 'del'
     const line = document.createElement('div')
-    line.className = `diff-line${row.kind === 'add' ? ' add' : row.kind === 'del' ? ' del' : ''}`
-    const a = document.createElement('span')
-    a.textContent = row.oldNo === null ? '' : String(row.oldNo)
-    const b = document.createElement('span')
-    b.textContent = row.newNo === null ? '' : String(row.newNo)
-    const c = document.createElement('span')
-    c.textContent = row.text
-    line.append(a, b, c)
+    line.className = `diff-row${isAdd ? ' add' : isDel ? ' del' : ''}`
+
+    // 增行只存在于当前侧，删行只存在于基准侧，另一侧留空
+    line.append(
+      noCell(isAdd || row.oldNo === null ? '' : String(row.oldNo)),
+      textCell(isAdd ? '' : row.text, !isAdd),
+      noCell(isDel || row.newNo === null ? '' : String(row.newNo)),
+      textCell(isDel ? '' : row.text, !isDel),
+    )
     frag.appendChild(line)
   }
   box.appendChild(frag)
   wrap.append(stat, box)
 
-  openDialog({ title: t('dialog.diff'), body: wrap })
+  if (trimmed) {
+    const note = document.createElement('div')
+    note.className = 'diff-note'
+    note.textContent = t('diff.trimmed')
+    wrap.append(note)
+  }
+
+  openDialog({ title: t('dialog.diff'), body: wrap, wide: true })
 }

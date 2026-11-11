@@ -1,7 +1,7 @@
 import { applyStaticText, getLang, initLang, onLangChange, setLang, t } from '../i18n'
 import { CodeMirrorAdapter } from '../editors/codemirror'
 import type { EditorAdapter } from '../editors/adapter'
-import { LANG_LABELS, langFromName, type LangId } from '../editors/languages'
+import { ALL_LANGS, LANG_LABELS, detectLang, langFromName, type LangId } from '../editors/languages'
 import * as store from './store'
 import {
   ENCODING_LABELS,
@@ -22,6 +22,7 @@ import { Drawer } from '../ui/layout'
 import { applyTheme } from '../ui/theme'
 import { toast } from '../ui/toast'
 import { renderMarkdown } from '../ui/markdown'
+import { createFindBar, type FindBar } from '../ui/findbar'
 import * as sb from '../ui/statusbar'
 import { renderFileList, renderSnapshotList } from '../ui/sidebar'
 import {
@@ -32,6 +33,7 @@ import {
   toolsDialog,
   transformsDialog,
 } from '../ui/dialogs'
+import { DEFAULT_SETTINGS } from '../types'
 import type { EngineId, FileMode, FileRecord, SnapshotRecord } from '../types'
 
 export const el = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -43,6 +45,8 @@ export interface AppState {
   editor: EditorAdapter | null
   engineId: EngineId
   mode: FileMode
+  /** 当前文件是否挂语法高亮：只读大文件也默认开，状态栏里的徽标可一键切换 */
+  highlight: boolean
   text: string
   dirty: boolean
   locked: boolean
@@ -60,6 +64,7 @@ export const state: AppState = {
   editor: null,
   engineId: 'cm',
   mode: 'full',
+  highlight: true,
   text: '',
   dirty: false,
   locked: false,
@@ -73,6 +78,7 @@ export const state: AppState = {
 
 const lock = new FileLock()
 let drawer: Drawer
+let findBar: FindBar
 let autosaveTimer = 0
 let previewTimer = 0
 
@@ -86,12 +92,23 @@ export async function startApp() {
   updateLangButton()
 
   drawer = new Drawer(el('drawer'), el('editorIsland'), () => state.editor?.layout())
+  applyPanelWidth(getSettings().panelWidth)
 
   wireTopbar()
   wireRails()
   wireEditorHead()
   wireStatusbar()
+
+  findBar = createFindBar({
+    getAdapter: () => state.editor,
+    getText: () => state.editor?.getValue() ?? state.text,
+    // 能不能替换只看当前是不是只读，不看体积：大文件手动解锁后照样能批量替换
+    canReplace: () =>
+      Boolean(state.current) && !state.locked && !state.current?.readOnly,
+  })
+
   wireDrawer()
+  wirePanelResizer()
   wireKeyboard()
   wireDropZone()
 
@@ -110,6 +127,7 @@ export async function startApp() {
     renderDrawerList()
     refreshMeta()
     renderPreviewNow()
+    findBar?.relabel()
   })
 
   window.addEventListener('beforeunload', (e) => {
@@ -139,6 +157,7 @@ function wireTopbar() {
     updateSettings({ theme: next })
     applyTheme(next)
     state.editor?.setTheme(next)
+    refreshPreviewTheme()
   })
 
   el('langBtn').addEventListener('click', () => {
@@ -173,6 +192,10 @@ function wireRails() {
   })
 
   el('previewBtn').addEventListener('click', () => togglePreview())
+  el('transformsBtn').addEventListener('click', () => transformsDialog((id) => applyTransform(id)))
+  el('statsBtn').addEventListener('click', () => showStats())
+  el('diffBtn').addEventListener('click', () => void diffWithLatest())
+  el('diffFileBtn').addEventListener('click', () => diffWithFile())
   el('toolsBtn').addEventListener('click', () => toolsDialog())
   el('drawerClose').addEventListener('click', () => void drawer.hide())
   el('previewClose').addEventListener('click', () => togglePreview(false))
@@ -209,11 +232,12 @@ function wireDrawer() {
   })
 }
 
-/* ------------------------------------------------------------ 编辑器头部 */
+/* ------------------------------------------------------------ 顶栏与空状态 */
 
 function wireEditorHead() {
   el('saveBtn').addEventListener('click', () => void saveFile())
   el('formatBtn').addEventListener('click', () => void doFormat())
+  el('findBtn').addEventListener('click', () => findBar?.open())
   el('moreBtn').addEventListener('click', (e) => openMoreMenu(e.currentTarget as HTMLElement))
   el('emptyPickBtn').addEventListener('click', () => void importFile())
   el('emptyPasteBtn').addEventListener('click', () => void importPasted())
@@ -248,13 +272,69 @@ function openMoreMenu(anchor: HTMLElement) {
     if (!menu.contains(ev.target as Node)) close()
   }
 
+  // 加工 / 信息 / 两种对比已经搬到右竖条，菜单只留低频动作与偏好
   item(t('menu.newSnapshot'), () => void createSnapshot())
-  item(t('menu.diff'), () => void diffWithLatest())
-  item(t('menu.transforms'), () => transformsDialog((id) => applyTransform(id)))
   item(t('menu.wrap'), () => toggleWrap())
-  item(t('menu.readonly'), () => toggleReadonly())
+  // 菜单里也说明「现在是只读，点了就放开」，和状态栏的徽标一致
+  item(t(state.current?.readOnly ? 'menu.editable' : 'menu.readonly'), () => toggleReadonly())
   item(t('menu.reencode'), () => pickEncoding())
-  item(t('menu.stats'), () => showStats())
+
+  // 字号与强调色是全局设置，与“是否打开文件”无关，单独成组
+  const divider = document.createElement('div')
+  divider.className = 'menu-divider'
+  menu.appendChild(divider)
+
+  const fontRow = document.createElement('div')
+  fontRow.className = 'menu-row'
+  const fontLabel = document.createElement('span')
+  fontLabel.className = 'menu-row-label'
+  fontLabel.textContent = t('settings.fontSize')
+  const fontValue = document.createElement('span')
+  fontValue.className = 'menu-row-value'
+
+  const minus = document.createElement('button')
+  minus.className = 'btn btn-ghost icon-only menu-step'
+  minus.textContent = '−'
+  const plus = document.createElement('button')
+  plus.className = 'btn btn-ghost icon-only menu-step'
+  plus.textContent = '+'
+
+  const syncSteps = () => {
+    const size = getSettings().fontSize
+    fontValue.textContent = `${size}px`
+    minus.disabled = size <= FONT_MIN
+    plus.disabled = size >= FONT_MAX
+  }
+  const fontStep = (delta: number) => {
+    const size = getSettings().fontSize
+    const next = Math.min(FONT_MAX, Math.max(FONT_MIN, size + delta))
+    if (next !== size) {
+      updateSettings({ fontSize: next })
+      applyTheme()
+      state.editor?.setFontSize(next)
+    }
+    syncSteps()
+  }
+  minus.onclick = () => fontStep(-1)
+  plus.onclick = () => fontStep(1)
+  syncSteps()
+  fontRow.append(fontLabel, minus, fontValue, plus)
+  menu.appendChild(fontRow)
+
+  const accent = document.createElement('button')
+  accent.className = 'btn'
+  accent.style.cssText = 'width:100%;justify-content:flex-start'
+  const paintAccent = () => {
+    accent.textContent = `${t('settings.accent')} · ${
+      getSettings().accentOn ? t('settings.on') : t('settings.off')
+    }`
+  }
+  paintAccent()
+  accent.onclick = () => {
+    toggleAccent()
+    paintAccent()
+  }
+  menu.appendChild(accent)
 
   document.body.appendChild(menu)
   setTimeout(() => document.addEventListener('click', outside, true), 0)
@@ -263,17 +343,24 @@ function openMoreMenu(anchor: HTMLElement) {
 /* ------------------------------------------------------------ 状态栏 */
 
 function wireStatusbar() {
+  el('stLang').addEventListener('click', () => pickLanguage())
+  el('stReadonly').addEventListener('click', () => toggleReadonly())
+  el('stHighlight').addEventListener('click', () => {
+    // 纯文本没有语法可切，点徽标直接去选语言，比点了没反应强
+    if (state.current && currentLang() === 'text') {
+      pickLanguage()
+      return
+    }
+    void toggleHighlight()
+  })
   el('stEncoding').addEventListener('click', () => pickEncoding())
   el('stEol').addEventListener('click', () => void toggleEol())
 }
 
 async function refreshStorage() {
   const info = await store.storageInfo()
+  // 缓存占用只在状态栏显示一处，抽屉底部留给导入按钮
   sb.setCache(info.usage, info.quota)
-  el('drawerFoot').textContent = t('drawer.foot', {
-    used: formatBytes(info.usage),
-    quota: info.quota ? formatBytes(info.quota) : '—',
-  })
 }
 
 /* ---------------------------------------------------------------- 导入 */
@@ -292,12 +379,13 @@ async function importFile() {
 }
 
 async function ingestFile(file: File, handle?: FileSystemFileHandle) {
-  if (file.size > LIMITS.reject) {
-    toast(
-      t('toast.tooLarge', { size: formatBytes(file.size), limit: formatBytes(LIMITS.reject) }),
-      'error',
+  // 不设硬上限：超大文件只提醒一次，用户确认后照常打开（只读）
+  if (file.size > LIMITS.warn) {
+    const res = await confirmDialog(
+      `${file.name || t('misc.untitled')} · ${formatBytes(file.size)}`,
+      t('confirm.hugeBody', { size: formatBytes(file.size), limit: formatBytes(LIMITS.warn) }),
     )
-    return
+    if (!res.ok) return
   }
 
   const buf = await file.arrayBuffer()
@@ -327,8 +415,16 @@ async function ingestFile(file: File, handle?: FileSystemFileHandle) {
     updatedAt: now,
   }
 
-  await store.putFile(rec)
+  // 没有体积上限后，大文件可能撑爆配额，这里给出明确提示而不是静默失败
+  try {
+    await store.putFile(rec)
+  } catch (err) {
+    toast(t('toast.cacheFailed', { msg: (err as Error).message }), 'error')
+    return
+  }
   await refreshFiles()
+  // 抽屉底部不再显示缓存占用，导入后要把状态栏的数字刷新一次
+  await refreshStorage()
   await openRecord(rec.id)
   toast(t('toast.imported', { name: rec.name }))
   if (encoding !== 'utf-8') toast(t('toast.encodingNote'))
@@ -362,14 +458,31 @@ async function importPasted() {
   }
   await store.putFile(rec)
   await refreshFiles()
+  await refreshStorage()
   await openRecord(rec.id)
 }
 
 /* ------------------------------------------------------------ 打开文件 */
 
+/** 高亮开关按文件记忆，放在 meta 里，避免为了一个布尔值重写整个 blob */
+type HighlightPrefs = Record<string, boolean>
+
+async function highlightPrefs(): Promise<HighlightPrefs> {
+  return (await store.getMeta<HighlightPrefs>('highlightPrefs')) ?? {}
+}
+
+async function saveHighlightPref(id: string, on: boolean): Promise<void> {
+  const prefs = await highlightPrefs()
+  prefs[id] = on
+  await store.setMeta('highlightPrefs', prefs)
+}
+
 async function openRecord(id: string) {
   const rec = await store.getFile(id)
   if (!rec) return
+
+  // 大文件没有实时草稿，切走前补一次写入，免得改了半天一换文件就没了
+  if (state.current && state.current.id !== id && state.dirty) await persistDraft()
 
   const free = await lock.claim(id)
   state.current = rec
@@ -377,6 +490,8 @@ async function openRecord(id: string) {
   if (!free) toast(t('toast.locked'), 'error')
 
   state.mode = modeFor(rec.size)
+  // 高亮默认开，包括只读的大文件；关过的话按文件记忆恢复
+  state.highlight = (await highlightPrefs())[id] !== false
   // 引擎偏好按文件记忆，其次回落到全局设置
   state.engineId = rec.engine ?? state.engineId
   state.encodingConfirmed = false
@@ -400,6 +515,8 @@ async function mountEditor(text: string, offset = 0) {
   if (!rec) return
 
   const host = el('editorHost')
+  // 换引擎 / 换文件后，旧的匹配位置已经失效
+  findBar?.close()
   state.editor?.destroy()
   state.editor = null
   host.innerHTML = ''
@@ -411,7 +528,8 @@ async function mountEditor(text: string, offset = 0) {
 
   const settings = getSettings()
   const full = state.mode === 'full'
-  const lang: LangId = full ? langFromName(rec.name) : 'text'
+  // 高亮只跟开关走，不跟体积走：两个引擎都只解析视口附近的行，25MB 的日志照样能上色
+  const lang: LangId = state.highlight ? langOf(rec, text) : 'text'
 
   const adapter = new Adapter()
   await adapter.mount(host, {
@@ -429,8 +547,11 @@ async function mountEditor(text: string, offset = 0) {
       schedulePreview()
       scheduleAutosave()
       updateFormatButton()
+      findBar?.refresh()
     },
     onCursor: (line, col) => sb.setCursor(line, col),
+    // 引擎内按下查找键，统一改用界面上的查找栏
+    onFind: (replace) => findBar?.open({ replace }),
   })
 
   state.editor = adapter
@@ -441,25 +562,98 @@ async function mountEditor(text: string, offset = 0) {
   sb.setCount(text)
   sb.setEncoding(ENCODING_LABELS[rec.encoding])
   sb.setEol(rec.eol)
-  sb.setReadonly(rec.readOnly || state.locked)
+  // 语言是文件本身的属性，只读大文件只是不解析，状态栏仍显示识别结果
+  sb.setLanguage(LANG_LABELS[langOf(rec, text)])
+  syncReadonlyBadge()
+  sb.setLight(state.mode === 'light')
   sb.setCursor(1, 1)
   updateDirtyDot()
   updateEngineSeg()
 }
 
+/**
+ * 语言判定：手动指定优先，否则按扩展名推断；
+ * 推断不出（.txt/.log 这类）再嗅探内容，所以导出的 logcat 日志能自动认出来。
+ */
+let langCache: { id: string; manual: boolean; stored: string; head: string; lang: LangId } | null =
+  null
+
+function langOf(rec: FileRecord, text: string): LangId {
+  // 每次按键都会走到这里，用前 256 个字符做键，避免重复嗅探整篇
+  const head = text.slice(0, 256)
+  if (
+    langCache &&
+    langCache.id === rec.id &&
+    langCache.manual === !!rec.langManual &&
+    langCache.stored === rec.lang &&
+    langCache.head === head
+  ) {
+    return langCache.lang
+  }
+  const lang =
+    rec.langManual && rec.lang ? (rec.lang as LangId) : detectLang(rec.name, text)
+  langCache = {
+    id: rec.id,
+    manual: !!rec.langManual,
+    stored: rec.lang,
+    head,
+    lang,
+  }
+  return lang
+}
+
+function currentLang(): LangId {
+  const rec = state.current
+  return rec ? langOf(rec, state.text) : 'text'
+}
+
+/**
+ * 文件信息只保留在状态栏与抽屉里，顶栏用文件名当窗口标题。
+ * 标题同时写进 document.title，切换标签页时也能看出当前文件。
+ */
 function refreshMeta() {
   const rec = state.current
+  const name = rec ? rec.name : 'Vellum'
+  el('titleText').textContent = name
+  el('brand').title = rec ? `${rec.name} · ${formatBytes(rec.size)}` : 'Vellum'
+  document.title = rec ? `${rec.name} — Vellum` : 'Vellum'
+  // 高亮开关只在大文件（或已经手动关掉）时占用状态栏，小文件默认全开不必提示。
+  // 纯文本没有语法可挂，徽标要说「无语法」而不是跟着开关假装在着色
+  const plain = !rec || langOf(rec, state.text) === 'text'
+  const hl = !state.highlight ? 'off' : plain ? 'na' : 'on'
+  sb.setHighlight(hl, Boolean(rec) && (state.mode !== 'full' || !state.highlight))
+  syncReadonlyBadge()
+  syncPreviewButton()
+  syncDocActions()
   if (!rec) {
-    el('fileName').textContent = t('editor.noFile')
-    el('fileMeta').textContent = ''
+    sb.setLanguage('—')
     return
   }
-  el('fileName').textContent = rec.name
-  const parts = [formatBytes(rec.size)]
-  if (state.mode === 'light') parts.push(t('meta.plain'))
-  if (state.mode === 'readonly') parts.push(t('meta.readonly'))
-  parts.push(LANG_LABELS[langFromName(rec.name)])
-  el('fileMeta').textContent = parts.join(' · ')
+}
+
+/** 预览只对 Markdown 有意义：别的文件连按钮都不用留，省得点了只弹提示 */
+function syncPreviewButton() {
+  const supported = Boolean(state.current) && currentLang() === 'markdown'
+  el('previewBtn').hidden = !supported
+  if (!supported && state.previewOpen) togglePreview(false)
+}
+
+/** 右竖条的文档操作（加工、信息、两种对比）没文件就没有意义，空状态一并收起 */
+function syncDocActions() {
+  const has = Boolean(state.current)
+  document.querySelectorAll<HTMLElement>('[data-doc-action]').forEach((b) => {
+    b.hidden = !has
+  })
+}
+
+/** 状态栏只读徽标：大文件默认锁着防手滑，但永远允许点开强制编辑 */
+function syncReadonlyBadge() {
+  const rec = state.current
+  sb.setReadonly(
+    Boolean(rec && (rec.readOnly || state.locked)),
+    Boolean(rec) && state.mode === 'readonly',
+    Boolean(rec) && !state.locked,
+  )
 }
 
 function updateDirtyDot() {
@@ -468,11 +662,12 @@ function updateDirtyDot() {
 
 function updateFormatButton() {
   const rec = state.current
-  const lang = rec ? langFromName(rec.name) : 'text'
+  const lang = rec ? langOf(rec, state.text) : 'text'
   const long = (state.editor?.getValue().length ?? 0) > LIMITS.format
   el<HTMLButtonElement>('formatBtn').disabled =
     !rec || state.mode !== 'full' || long || !canFormat(lang)
   el<HTMLButtonElement>('saveBtn').disabled = !rec
+  el<HTMLButtonElement>('findBtn').disabled = !rec
 }
 
 /* ------------------------------------------------------------ 自动草稿 */
@@ -481,7 +676,8 @@ function scheduleAutosave() {
   const rec = state.current
   if (!rec) return
   window.clearTimeout(autosaveTimer)
-  if (rec.size > LIMITS.autosave) return
+  // 大文件手动解锁后不给草稿自动保存：几十 MB 的文本每两秒重写一次 IndexedDB 会卡死
+  if (rec.readOnly || rec.size > LIMITS.autosave) return
   autosaveTimer = window.setTimeout(() => void persistDraft(), 2000)
 }
 
@@ -581,19 +777,45 @@ function prefetchMonaco() {
 
 /* ------------------------------------------------------------ 其它开关 */
 
+/** 字号可调区间：小于 11px 伤眼，大于 20px 一屏放不下几行 */
+const FONT_MIN = 11
+const FONT_MAX = 20
+
+function toggleAccent() {
+  updateSettings({ accentOn: !getSettings().accentOn })
+  applyTheme()
+  // Monaco 的颜色在 defineTheme 时读取 CSS 变量，同名主题不会自动重读
+  state.editor?.refreshTheme()
+}
+
 function toggleWrap() {
   const next = !getSettings().wordWrap
   updateSettings({ wordWrap: next })
   state.editor?.setWordWrap(next)
 }
 
+/**
+ * 只读 / 可编辑。
+ * 大文件默认只读只是「防手滑」，不是禁令：点一下就能强制编辑，
+ * 但这条路径没有草稿自动保存（几十 MB 的文本每次防抖都重写会卡），要自己保存。
+ */
 function toggleReadonly() {
   const rec = state.current
   if (!rec) return
+  if (state.locked) {
+    // 另一个标签页占着写锁，先放了那边再说
+    toast(t('toast.locked'), 'error')
+    return
+  }
+
+  const big = state.mode === 'readonly'
   rec.readOnly = !rec.readOnly
   state.editor?.setReadOnly(rec.readOnly)
-  sb.setReadonly(rec.readOnly || state.locked)
+  refreshMeta()
   void store.putFile(rec)
+
+  if (rec.readOnly) toast(t('toast.readonlyOn'))
+  else toast(t(big ? 'toast.readonlyOffBig' : 'toast.readonlyOff'))
 }
 
 /* ------------------------------------------------------------ 编码 / 换行 */
@@ -616,6 +838,79 @@ function pickEncoding() {
   })
 
   const dlg = openDialog({ title: t('dialog.encoding'), body: wrap, narrow: true })
+}
+
+/**
+ * 高亮开关：大文件默认也开着，卡了就在状态栏点这儿关掉。
+ * Monaco 是在建模时定死「是否分词」的，所以切换要重建编辑器。
+ */
+async function toggleHighlight() {
+  const rec = state.current
+  if (!rec || !state.editor) return
+
+  const on = !state.highlight
+  const value = state.editor.getValue()
+  const offset = state.editor.getOffset()
+
+  state.highlight = on
+  await saveHighlightPref(rec.id, on)
+  await mountEditor(value, offset)
+  refreshMeta()
+  toast(t(on ? 'toast.highlightOn' : 'toast.highlightOff'))
+}
+
+function pickLanguage() {
+  const rec = state.current
+  if (!rec) return
+
+  const current = langOf(rec, state.text)
+  const wrap = document.createElement('div')
+  wrap.className = 'toolbar-row'
+
+  const item = (label: string, active: boolean, run: () => void) => {
+    const b = document.createElement('button')
+    b.className = `btn${active ? ' btn-primary' : ''}`
+    b.textContent = label
+    b.onclick = () => {
+      dlg.close()
+      run()
+    }
+    wrap.appendChild(b)
+  }
+
+  item(t('lang.auto'), !rec.langManual, () => void applyLanguage(null))
+  ALL_LANGS.forEach((id) => {
+    item(LANG_LABELS[id], !!rec.langManual && current === id, () => void applyLanguage(id))
+  })
+
+  const dlg = openDialog({ title: t('dialog.language'), body: wrap, narrow: true })
+}
+
+/** next 为 null 表示回到自动（按扩展名 + 内容嗅探） */
+async function applyLanguage(next: LangId | null) {
+  const rec = state.current
+  if (!rec || !state.editor) return
+
+  rec.langManual = next !== null
+  rec.lang = next ?? detectLang(rec.name, state.text)
+  await store.putFile(rec)
+
+  const lang = currentLang()
+  // 高亮关着的时候选语言就是要求看颜色，顺手打开（大文件需要重建才生效）
+  if (!state.highlight) {
+    const value = state.editor.getValue()
+    const offset = state.editor.getOffset()
+    state.highlight = true
+    await saveHighlightPref(rec.id, true)
+    await mountEditor(value, offset)
+  } else {
+    state.editor.setLanguage(lang)
+  }
+  sb.setLanguage(LANG_LABELS[lang])
+  // refreshMeta 里的 syncPreviewButton 会顺手收起非 Markdown 的预览
+  refreshMeta()
+  updateFormatButton()
+  toast(t('toast.languageSet', { lang: LANG_LABELS[lang] }))
 }
 
 async function reDecode(enc: keyof typeof ENCODING_LABELS) {
@@ -663,7 +958,7 @@ async function toggleEol() {
 async function doFormat() {
   const rec = state.current
   if (!rec || !state.editor) return
-  const lang = langFromName(rec.name)
+  const lang = langOf(rec, state.text)
   const btn = el<HTMLButtonElement>('formatBtn')
   btn.disabled = true
   try {
@@ -743,6 +1038,47 @@ async function compareSnapshot(id: string) {
   diffDialog(new Date(snap.createdAt).toLocaleString(), await snap.blob.text(), state.text)
 }
 
+/** 文件对文件：把另一个已导入文件的全文拿出来当基准 */
+async function compareWithFile(id: string) {
+  const rec = state.current
+  const other = state.files.find((f) => f.id === id)
+  if (!rec || !other) return
+  diffDialog(other.name, await other.blob.text(), state.text)
+}
+
+/** 从「更多」菜单挑一个文件当基准 */
+function diffWithFile() {
+  const rec = state.current
+  if (!rec) return
+
+  const others = state.files.filter((f) => f.id !== rec.id)
+  if (!others.length) {
+    toast(t('diff.noOtherFiles'))
+    return
+  }
+
+  const wrap = document.createElement('div')
+  wrap.className = 'pick-list'
+
+  const dlg = openDialog({ title: t('dialog.diffPick'), body: wrap, narrow: true })
+  for (const f of others) {
+    const b = document.createElement('button')
+    b.className = 'btn pick-item'
+    const name = document.createElement('span')
+    name.className = 'pick-name'
+    name.textContent = f.name
+    const meta = document.createElement('span')
+    meta.className = 'pick-meta'
+    meta.textContent = formatBytes(f.size)
+    b.append(name, meta)
+    b.onclick = () => {
+      dlg.close()
+      void f.blob.text().then((text) => diffDialog(f.name, text, state.text))
+    }
+    wrap.appendChild(b)
+  }
+}
+
 async function refreshSnapshots() {
   state.snapshots = state.current ? await store.listSnapshots(state.current.id) : []
   if (state.drawerTab === 'snapshots') renderDrawerList()
@@ -760,6 +1096,7 @@ function renderDrawerList() {
   if (state.drawerTab === 'files') {
     renderFileList(host, state.files, state.current?.id ?? null, state.search, {
       open: (id) => void openRecord(id),
+      compare: (id) => void compareWithFile(id),
       remove: (id) => void removeFile(id),
     })
   } else {
@@ -794,6 +1131,9 @@ async function removeFile(id: string) {
     el('rightPanel').classList.remove('is-open')
     state.previewOpen = false
     refreshMeta()
+    sb.setLanguage('—')
+    sb.setLight(false)
+    sb.setReadonly(false)
     updateDirtyDot()
     updateFormatButton()
     await store.setMeta('lastFileId', null)
@@ -818,12 +1158,12 @@ function showStats() {
   if (!rec) return
   const text = state.text
   const rows: [string, string][] = [
-    [t('editor.noFile'), rec.name],
+    [t('stats.name'), rec.name],
     ['', formatBytes(rec.size)],
     ['', `${text.split('\n').length} lines · ${text.length} chars`],
     ['', ENCODING_LABELS[rec.encoding]],
     ['', rec.eol.toUpperCase()],
-    ['', LANG_LABELS[langFromName(rec.name)]],
+    ['', LANG_LABELS[langOf(rec, text)]],
     ['', state.engineId === 'monaco' ? 'Monaco' : 'CodeMirror'],
     ['', new Date(rec.createdAt).toLocaleString()],
     ['', new Date(rec.updatedAt).toLocaleString()],
@@ -842,10 +1182,114 @@ function showStats() {
 
 /* ------------------------------------------------------------ 预览 */
 
+const PANEL_MIN = 280
+const PANEL_MAX = 760
+/** 两条竖条 + 间距 + 编辑区最小可读宽度，用于窗口变窄时收住预览 */
+const PANEL_RESERVED = 520
+
+function clampPanelWidth(px: number): number {
+  const room = el('body').clientWidth - PANEL_RESERVED
+  const max = Math.max(PANEL_MIN, Math.min(PANEL_MAX, room))
+  return Math.min(max, Math.max(PANEL_MIN, Math.round(px)))
+}
+
+/**
+ * 面板脱离文档流时，右缘要停在 rail-right 左侧。
+ * 取实际几何值而不是算轨道宽度，改布局时不用同步这个数。
+ */
+function panelRightOffset(): number {
+  const rail = document.querySelector('.rail-right')
+  const host = el('body')
+  if (!rail) return 0
+  const gap = Number.parseFloat(getComputedStyle(host).columnGap) || 0
+  // 面板右缘 + 间距 = 右竖条左缘
+  return Math.round(host.getBoundingClientRect().right - rail.getBoundingClientRect().left + gap)
+}
+
+/** 落定宽度：回到文档流，此时才让编辑器重新布局一次 */
+function applyPanelWidth(px: number): number {
+  const width = clampPanelWidth(px)
+  const panel = el('rightPanel')
+  panel.classList.remove('is-floating')
+  panel.style.right = ''
+  panel.style.width = ''
+  el('editorIsland').style.marginRight = ''
+  // 写在根变量上而不是内联样式，否则打印时 @media print 的 width:100% 覆盖不掉
+  document.documentElement.style.setProperty('--panel-w', `${width}px`)
+  state.editor?.layout()
+  return width
+}
+
+function wirePanelResizer() {
+  const panel = el('rightPanel')
+  const handle = el('panelResizer')
+
+  handle.addEventListener('pointerdown', (ev: PointerEvent) => {
+    if (ev.button !== 0) return
+    ev.preventDefault()
+    const startX = ev.clientX
+    const startW = panel.getBoundingClientRect().width
+    handle.setPointerCapture(ev.pointerId)
+    handle.classList.add('is-dragging')
+    document.body.classList.add('is-resizing')
+
+    // 拖动阶段面板浮起来（脱离文档流），宽度变化只重排它自己；
+    // 编辑区用右边距抵消掉面板原本占的宽度，全程不重排，松手后再一次性落定
+    const body = el('body')
+    const gap = Number.parseFloat(getComputedStyle(body).columnGap) || 0
+    panel.classList.add('is-floating')
+    panel.style.right = `${panelRightOffset()}px`
+    panel.style.width = `${startW}px`
+    el('editorIsland').style.marginRight = `${startW + gap}px`
+
+    const move = (e: PointerEvent) => {
+      // 面板贴在编辑区右侧，向左拖才变宽
+      panel.style.width = `${clampPanelWidth(startW - (e.clientX - startX))}px`
+    }
+    const end = () => {
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', end)
+      handle.removeEventListener('pointercancel', end)
+      if (handle.hasPointerCapture(ev.pointerId)) handle.releasePointerCapture(ev.pointerId)
+      handle.classList.remove('is-dragging')
+      document.body.classList.remove('is-resizing')
+      const width = Math.round(panel.getBoundingClientRect().width)
+      updateSettings({ panelWidth: applyPanelWidth(width) })
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', end)
+    handle.addEventListener('pointercancel', end)
+  })
+
+  handle.addEventListener('dblclick', () => {
+    applyPanelWidth(DEFAULT_SETTINGS.panelWidth)
+    updateSettings({ panelWidth: DEFAULT_SETTINGS.panelWidth })
+  })
+
+  // ← 变宽、→ 变窄，与拖动方向一致；Shift 加速
+  handle.addEventListener('keydown', (ev: KeyboardEvent) => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return
+    ev.preventDefault()
+    const step = ev.shiftKey ? 40 : 8
+    applyPanelWidth(panel.getBoundingClientRect().width + (ev.key === 'ArrowLeft' ? step : -step))
+    updateSettings({ panelWidth: Math.round(panel.getBoundingClientRect().width) })
+  })
+
+  // 窗口变窄时按容器重算显示宽度，但不覆盖用户设定的值
+  let raf = 0
+  window.addEventListener('resize', () => {
+    if (raf) return
+    raf = requestAnimationFrame(() => {
+      raf = 0
+      applyPanelWidth(getSettings().panelWidth)
+    })
+  })
+}
+
 function togglePreview(force?: boolean) {
   const rec = state.current
   const want = force ?? !state.previewOpen
-  if (want && (!rec || langFromName(rec.name) !== 'markdown')) {
+  if (want && (!rec || currentLang() !== 'markdown')) {
     toast(t('toast.previewUnsupported'))
     return
   }
@@ -856,9 +1300,38 @@ function togglePreview(force?: boolean) {
   requestAnimationFrame(() => state.editor?.layout())
 }
 
+let previewSeq = 0
+
+function currentTheme(): 'dark' | 'light' {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
+}
+
 function renderPreviewNow() {
   if (!state.previewOpen) return
-  el('previewBody').innerHTML = renderMarkdown(state.text)
+  // 预览只画 Markdown：切到日志之类的文件时先收起，别把几十 MB 文本丢给 marked
+  if (currentLang() !== 'markdown') {
+    togglePreview(false)
+    return
+  }
+  const body = el('previewBody')
+  const seq = ++previewSeq
+  const scrollTop = body.scrollTop
+  body.innerHTML = renderMarkdown(state.text)
+  if (!body.querySelector('.mermaid-block')) return
+  void (async () => {
+    // mermaid 体积大，只在文档里真有图表时才加载
+    const { renderMermaidBlocks } = await import('../ui/mermaid')
+    if (seq !== previewSeq || !state.previewOpen) return
+    await renderMermaidBlocks(body, currentTheme())
+    if (seq === previewSeq) body.scrollTop = scrollTop
+  })()
+}
+
+/** 换主题后图表要按新配色重画，正文本身走 CSS 变量不用重建 */
+function refreshPreviewTheme() {
+  if (!state.previewOpen) return
+  if (!el('previewBody').querySelector('.mermaid-block')) return
+  renderPreviewNow()
 }
 
 function schedulePreview() {
@@ -916,8 +1389,25 @@ function wireKeyboard() {
       void doFormat()
       return
     }
+    // 弹窗打开时把按键让给弹窗里的输入框
+    if (mod && !el('dialogLayer').hidden) return
+    if (mod && e.altKey && key === 'f') {
+      e.preventDefault()
+      findBar?.open({ replace: true })
+      return
+    }
+    if (mod && key === 'f') {
+      e.preventDefault()
+      findBar?.open()
+      return
+    }
     if (e.key === 'Escape' && drawer.isOpen) {
       void drawer.hide().then(syncDrawerTabs)
+      return
+    }
+    if (e.key === 'Escape' && findBar?.isOpen()) {
+      e.preventDefault()
+      findBar.close()
       return
     }
     if (e.key === '?' && !isTyping(e.target)) {

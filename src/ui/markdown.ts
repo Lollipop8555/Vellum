@@ -22,10 +22,26 @@ function sanitize(html: string): string {
   return doc.body.innerHTML
 }
 
-export function renderMarkdown(text: string): string {
-  return sanitize(marked.parse(text, { async: false }) as string)
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
-export function looksLikeMarkdown(lang: string): boolean {
-  return lang === 'markdown'
+const renderer = new marked.Renderer()
+const defaultCode = renderer.code.bind(renderer)
+
+renderer.code = (token) => {
+  const lang = (token.lang ?? '').trim().split(/\s+/)[0]
+  if (lang !== 'mermaid') return defaultCode(token)
+  // 源码同时留在 data 属性（换主题要重画）和正文里（图表还没画出来时先看到代码）
+  return (
+    `<div class="mermaid-block" data-mermaid="${encodeURIComponent(token.text)}">` +
+    `<pre class="mermaid-source">${escapeHtml(token.text)}</pre></div>`
+  )
+}
+
+export function renderMarkdown(text: string): string {
+  return sanitize(marked.parse(text, { async: false, renderer }) as string)
 }

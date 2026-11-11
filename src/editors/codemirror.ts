@@ -1,5 +1,12 @@
-import { Compartment, EditorState } from '@codemirror/state'
 import {
+  Compartment,
+  EditorState,
+  Prec,
+  StateEffect,
+  StateField,
+} from '@codemirror/state'
+import {
+  Decoration,
   EditorView,
   crosshairCursor,
   drawSelection,
@@ -10,11 +17,12 @@ import {
   keymap,
   lineNumbers,
   rectangularSelection,
+  type DecorationSet,
 } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { openSearchPanel, search, searchKeymap } from '@codemirror/search'
 import {
   HighlightStyle,
+  StreamLanguage,
   bracketMatching,
   foldGutter,
   foldKeymap,
@@ -22,9 +30,9 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language'
 import { closeBrackets, autocompletion, closeBracketsKeymap } from '@codemirror/autocomplete'
-import { tags } from '@lezer/highlight'
-import type { EditorAdapter, EditorOptions } from './adapter'
-import { cmLanguage, type LangId } from './languages'
+import { Tag, tags } from '@lezer/highlight'
+import type { EditorAdapter, EditorOptions, SearchApi } from './adapter'
+import { cmLanguage, scanLogcatLine, type LangId, type LogcatToken } from './languages'
 
 /** 颜色一律引用 CSS 变量，切换主题无需重建编辑器 */
 const vellumTheme = EditorView.theme({
@@ -93,6 +101,102 @@ const vellumTheme = EditorView.theme({
   },
 })
 
+/* ---------------- logcat ---------------- */
+
+/** logcat 专用标签：内置 tags 表达不了「按日志级别分色」，单独定义 */
+const logcatTags = {
+  time: Tag.define(),
+  pid: Tag.define(),
+  verbose: Tag.define(),
+  debug: Tag.define(),
+  info: Tag.define(),
+  warn: Tag.define(),
+  error: Tag.define(),
+  tag: Tag.define(),
+  stack: Tag.define(),
+  exc: Tag.define(),
+}
+
+const LOG_LEVEL_TAGS: Record<string, Tag> = {
+  'level-verbose': logcatTags.verbose,
+  'level-debug': logcatTags.debug,
+  'level-info': logcatTags.info,
+  'level-warn': logcatTags.warn,
+  'level-error': logcatTags.error,
+}
+
+// 同一行会被逐段请求，缓存解析结果，避免重复跑正则
+const logcatCache = new Map<string, LogcatToken[]>()
+
+function logcatTokens(line: string): LogcatToken[] {
+  const hit = logcatCache.get(line)
+  if (hit) return hit
+  const tokens = scanLogcatLine(line)
+  if (logcatCache.size > 300) logcatCache.clear()
+  logcatCache.set(line, tokens)
+  return tokens
+}
+
+const logcatLanguage = StreamLanguage.define({
+  name: 'logcat',
+  token(stream) {
+    const tokens = logcatTokens(stream.string)
+    // 跳到当前位置之后的下一个着色区间，中间的普通文本一起跳过
+    const hit = tokens.find((t) => t.end > stream.pos)
+    if (!hit) {
+      stream.skipToEnd()
+      return null
+    }
+    stream.pos = hit.end
+    return hit.type
+  },
+  tokenTable: {
+    time: logcatTags.time,
+    pid: logcatTags.pid,
+    tag: logcatTags.tag,
+    stack: logcatTags.stack,
+    error: logcatTags.exc,
+    ...LOG_LEVEL_TAGS,
+  },
+})
+
+/** logcat 的扩展不走 languages.ts，避免那两个模块互相引用 */
+const langExtension = (id: LangId) => (id === 'logcat' ? logcatLanguage : cmLanguage(id))
+
+/* ---------------- 查找高亮 ---------------- */
+
+interface FindMarks {
+  ranges: Array<{ from: number; to: number }>
+  active: number
+}
+
+const setFindMarks = StateEffect.define<FindMarks>()
+
+/**
+ * 匹配底色由这个 StateField 持有：放在编辑器状态里，
+ * 滚动时由视口自动裁剪，不必自己算可见区间。
+ */
+const findMarkField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(marks, tr) {
+    let next = marks.map(tr.changes)
+    for (const effect of tr.effects) {
+      if (!effect.is(setFindMarks)) continue
+      const { ranges, active } = effect.value
+      const items = []
+      for (let i = 0; i < ranges.length; i++) {
+        const r = ranges[i]
+        if (r.to <= r.from) continue
+        const attrs = { class: i === active ? 'cm-find-active' : 'cm-find-match' }
+        items.push(Decoration.mark(attrs).range(r.from, r.to))
+      }
+      next = Decoration.set(items, true)
+    }
+    return next
+  },
+  provide: (field) => EditorView.decorations.from(field),
+})
+
 const vellumHighlight = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier, tags.operatorKeyword], color: 'var(--syn-key)' },
   { tag: [tags.string, tags.special(tags.string), tags.regexp], color: 'var(--syn-str)' },
@@ -108,6 +212,16 @@ const vellumHighlight = HighlightStyle.define([
   { tag: [tags.strong], fontWeight: '600' },
   { tag: [tags.meta, tags.processingInstruction], color: 'var(--c-dim)' },
   { tag: [tags.invalid], color: 'var(--c-danger)' },
+  // logcat：时间戳与 PID 用弱色，级别按严重程度递进
+  { tag: [logcatTags.time, logcatTags.pid], color: 'var(--c-dim)' },
+  { tag: [logcatTags.verbose], color: 'var(--c-faint)' },
+  { tag: [logcatTags.debug], color: 'var(--syn-type)' },
+  { tag: [logcatTags.info], color: 'var(--syn-str)' },
+  { tag: [logcatTags.warn], color: 'var(--syn-num)' },
+  { tag: [logcatTags.error], color: 'var(--c-danger)', fontWeight: '600' },
+  { tag: [logcatTags.tag], color: 'var(--syn-key)' },
+  { tag: [logcatTags.stack], color: 'var(--c-dim)' },
+  { tag: [logcatTags.exc], color: 'var(--c-danger)' },
 ])
 
 export class CodeMirrorAdapter implements EditorAdapter {
@@ -139,18 +253,39 @@ export class CodeMirrorAdapter implements EditorAdapter {
         rectangularSelection(),
         crosshairCursor(),
         highlightActiveLine(),
-        search({ top: true }),
+        findMarkField,
         syntaxHighlighting(vellumHighlight),
+        // 查找键位压过内建键位，统一交给界面上的查找栏
+        Prec.highest(
+          keymap.of([
+            {
+              key: 'Mod-f',
+              run: () => {
+                this.opts?.onFind?.(false)
+                return true
+              },
+            },
+            {
+              key: 'Mod-Alt-f',
+              run: () => {
+                this.opts?.onFind?.(true)
+                return true
+              },
+            },
+          ]),
+        ),
         keymap.of([
           ...closeBracketsKeymap,
           ...defaultKeymap,
-          ...searchKeymap,
           ...historyKeymap,
           ...foldKeymap,
           indentWithTab,
         ]),
         vellumTheme,
-        this.langComp.of(cmLanguage(opts.language)),
+        this.langComp.of(langExtension(opts.language)),
+        // 只读会把 contenteditable 关掉，元素就不可聚焦，Cmd+End / 方向键全部失效；
+        // 补一个 tabindex 让只读的大文件也能用键盘翻
+        EditorView.contentAttributes.of({ tabindex: '0' }),
         this.readOnlyComp.of([
           EditorState.readOnly.of(opts.readOnly),
           EditorView.editable.of(!opts.readOnly),
@@ -191,7 +326,7 @@ export class CodeMirrorAdapter implements EditorAdapter {
   }
 
   setLanguage(id: LangId): void {
-    this.view?.dispatch({ effects: this.langComp.reconfigure(cmLanguage(id)) })
+    this.view?.dispatch({ effects: this.langComp.reconfigure(langExtension(id)) })
   }
 
   setReadOnly(v: boolean): void {
@@ -215,6 +350,10 @@ export class CodeMirrorAdapter implements EditorAdapter {
 
   setTheme(_t: 'dark' | 'light'): void {
     // 颜色走 CSS 变量，主题切换后只需重新测量
+    this.refreshTheme()
+  }
+
+  refreshTheme(): void {
     this.view?.requestMeasure()
   }
 
@@ -230,8 +369,42 @@ export class CodeMirrorAdapter implements EditorAdapter {
   }
 
   openSearch(): void {
-    if (!this.view) return
-    openSearchPanel(this.view)
+    this.opts?.onFind?.(false)
+  }
+
+  searchApi(): SearchApi {
+    const view = () => this.view
+    return {
+      getSelection() {
+        const sel = view()?.state.selection.main
+        return { from: sel?.from ?? 0, to: sel?.to ?? 0 }
+      },
+      selectRange(from, to) {
+        const v = view()
+        if (!v) return
+        const len = v.state.doc.length
+        const a = Math.max(0, Math.min(from, len))
+        const b = Math.max(a, Math.min(to, len))
+        v.dispatch({
+          selection: { anchor: a, head: b },
+          effects: EditorView.scrollIntoView(a, { y: 'center' }),
+        })
+      },
+      setSearchMarks(ranges, active) {
+        view()?.dispatch({ effects: setFindMarks.of({ ranges, active }) })
+      },
+      clearSearchMarks() {
+        view()?.dispatch({ effects: setFindMarks.of({ ranges: [], active: -1 }) })
+      },
+      applyEdits(edits) {
+        const v = view()
+        if (!v || edits.length === 0) return
+        // 同一事务里的多处改动，撤销时算一步
+        v.dispatch({
+          changes: edits.map((e) => ({ from: e.from, to: e.to, insert: e.insert })),
+        })
+      },
+    }
   }
 
   focus(): void {

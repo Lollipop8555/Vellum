@@ -18,6 +18,8 @@ export interface FileRecord {
   size: number
   blob: Blob
   lang: string
+  /** true：用户手动指定过语言；缺省：按扩展名推断，推断不出再嗅探内容 */
+  langManual?: boolean
   encoding: EncodingId
   eol: 'lf' | 'crlf'
   engine: EngineId
@@ -44,7 +46,7 @@ export interface MetaRecord {
   value: unknown
 }
 
-export type FileMode = 'full' | 'light' | 'readonly' | 'rejected'
+export type FileMode = 'full' | 'light' | 'readonly'
 
 export interface OpenResult {
   text: string
@@ -60,6 +62,8 @@ export interface Settings {
   accentOn: boolean
   defaultEngine: EngineId
   wordWrap: boolean
+  /** Markdown 预览面板宽度，单位 px */
+  panelWidth: number
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -69,4 +73,5 @@ export const DEFAULT_SETTINGS: Settings = {
   accentOn: true,
   defaultEngine: 'cm',
   wordWrap: false,
+  panelWidth: 440,
 }
