@@ -1,6 +1,7 @@
 import { applyStaticText, getLang, initLang, onLangChange, setLang, t } from '../i18n'
 import { CodeMirrorAdapter } from '../editors/codemirror'
 import type { EditorAdapter } from '../editors/adapter'
+import { activeIndex, extractOutline, type OutlineItem } from '../ui/outline'
 import {
   ALL_LANGS,
   LANG_LABELS,
@@ -130,8 +131,13 @@ export interface AppState {
   search: string
   rawBytes: ArrayBuffer | null
   encodingConfirmed: boolean
+  /** 右侧面板是否展开（名字沿用老代码：它管的就是这个面板） */
   previewOpen: boolean
+  /** 右侧面板当前显示哪一页 */
+  rightTab: RightTab
 }
+
+export type RightTab = 'preview' | 'outline'
 
 export const state: AppState = {
   files: [],
@@ -153,6 +159,7 @@ export const state: AppState = {
   rawBytes: null,
   encodingConfirmed: false,
   previewOpen: false,
+  rightTab: 'preview',
 }
 
 const lock = new FileLock()
@@ -306,15 +313,27 @@ function wireRails() {
   })
   el('drawerClose').addEventListener('click', () => void drawer.hide())
 
-  el('previewBtn').addEventListener('click', () => togglePreview())
+  el('previewBtn').addEventListener('click', () => togglePanel('preview'))
+  el('outlineBtn').addEventListener('click', () => togglePanel('outline'))
   el('transformsBtn').addEventListener('click', () => transformsDialog((id) => applyTransform(id)))
   el('statsBtn').addEventListener('click', () => showStats())
   el('diffBtn').addEventListener('click', () => void diffWithLatest())
   el('diffFileBtn').addEventListener('click', () => diffWithFile())
   el('toolsBtn').addEventListener('click', () => toolsDialog())
-  el('previewClose').addEventListener('click', () => togglePreview(false))
+  // 页签只切页不收起：点当前页把它关掉，是在跟用户的手指作对（收起是右上角 × 的事）
+  el('panelTabPreview').addEventListener('click', () => togglePanel('preview', true))
+  el('panelTabOutline').addEventListener('click', () => togglePanel('outline', true))
+  el('outlineBody').addEventListener('click', (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLElement>('.outline-item')
+    if (!btn) return
+    const item = outlineItems[Number(btn.dataset.index ?? -1)]
+    if (!item) return
+    state.editor?.goToLine(item.line)
+    state.editor?.focus()
+  })
+  el('previewClose').addEventListener('click', () => closePanel())
   el('previewPrint').addEventListener('click', () => {
-    if (!state.previewOpen) togglePreview(true)
+    togglePanel('preview', true)
     setTimeout(() => window.print(), 150)
   })
 }
@@ -843,8 +862,7 @@ function closeCurrent() {
   rememberTabFile(null)
   el('editorHost').innerHTML = ''
   el('emptyState').hidden = false
-  el('rightPanel').classList.remove('is-open')
-  state.previewOpen = false
+  closePanel()
   refreshMeta()
   sb.setLanguage('—')
   sb.setLight(false)
@@ -920,11 +938,16 @@ async function mountEditor(text: string, offset = 0) {
       sb.setCount(v)
       syncSizeBadge()
       schedulePreview()
+      scheduleOutline()
       scheduleAutosave()
       updateFormatButton()
       findBar?.refresh()
     },
-    onCursor: (line, col) => sb.setCursor(line, col),
+    onCursor: (line, col) => {
+      cursorLine = line
+      sb.setCursor(line, col)
+      syncOutlineActive()
+    },
     // 引擎内按下查找键，统一改用界面上的查找栏
     onFind: (replace) => findBar?.open({ replace }),
   })
@@ -988,7 +1011,7 @@ function refreshMeta() {
     hl === 'na' ? altEngine(lang) : null,
   )
   syncReadonlyBadge()
-  syncPreviewButton()
+  syncPanelButtons()
   syncDocActions()
   syncSizeBadge()
   syncEncodingBadge()
@@ -998,11 +1021,39 @@ function refreshMeta() {
   }
 }
 
-/** 预览只对 Markdown 有意义：别的文件连按钮都不用留，省得点了只弹提示 */
-function syncPreviewButton() {
-  const supported = Boolean(state.current) && currentLang() === 'markdown'
-  el('previewBtn').hidden = !supported
-  if (!supported && state.previewOpen) togglePreview(false)
+/** 右侧面板的两个入口：预览只对 Markdown 有意义，大纲任何文本文件都有 */
+function syncPanelButtons() {
+  const rec = state.current
+  const md = Boolean(rec) && currentLang() === 'markdown'
+  el('previewBtn').hidden = !md
+  el('outlineBtn').hidden = !rec
+  // 预览这一页在当前文件上不适用时，面板不收起、转到大纲：
+  // 切个文件就把侧栏闪没，比留着它更烦
+  if (state.rightTab === 'preview' && !md) state.rightTab = 'outline'
+  syncPanelChrome()
+  if (state.previewOpen) renderActivePanel()
+}
+
+/** 面板头标签与竖条高亮的唯一真相源 */
+function syncPanelChrome() {
+  const outline = state.rightTab === 'outline'
+  const md = Boolean(state.current) && currentLang() === 'markdown'
+  el('panelTabPreview').hidden = !md
+  el('panelTabPreview').classList.toggle('is-active', !outline)
+  el('panelTabOutline').classList.toggle('is-active', outline)
+  el('previewBody').hidden = outline
+  el('outlineBody').hidden = !outline
+  // 打印只对着渲染后的 Markdown 有意义
+  el('previewPrint').hidden = outline
+  el('previewBtn').classList.toggle('is-active', state.previewOpen && !outline)
+  el('outlineBtn').classList.toggle('is-active', state.previewOpen && outline)
+}
+
+function closePanel() {
+  state.previewOpen = false
+  el('rightPanel').classList.remove('is-open')
+  syncPanelChrome()
+  requestAnimationFrame(() => state.editor?.layout())
 }
 
 /** 右竖条的文档操作（加工、信息、两种对比）没文件就没有意义，空状态一并收起 */
@@ -1526,10 +1577,11 @@ function pickLanguage() {
     grid.appendChild(b)
   }
 
+  // 「纯文本」永远排第一；其余按显示名首字母排。上百项靠滚动找，顺序必须可预期
   item('text', current === 'text')
-  ALL_LANGS.forEach((id) => {
-    if (id !== 'text') item(id, rec.langOverride === id && current === id)
-  })
+  ALL_LANGS.filter((id) => id !== 'text')
+    .sort((a, b) => LANG_LABELS[a].localeCompare(LANG_LABELS[b], 'en', { sensitivity: 'base' }))
+    .forEach((id) => item(id, rec.langOverride === id && current === id))
 
   // 一百多个语言，靠滚动找太慢，边打边筛
   search.oninput = () => {
@@ -2380,14 +2432,41 @@ function showStats() {
 /* ------------------------------------------------------------ 预览 */
 
 const PANEL_MIN = 280
-const PANEL_MAX = 760
-/** 两条竖条 + 间距 + 编辑区最小可读宽度，用于窗口变窄时收住预览 */
-const PANEL_RESERVED = 520
+const DRAWER_MIN = 200
 
-function clampPanelWidth(px: number): number {
-  const room = el('body').clientWidth - PANEL_RESERVED
-  const max = Math.max(PANEL_MIN, Math.min(PANEL_MAX, room))
-  return Math.min(max, Math.max(PANEL_MIN, Math.round(px)))
+/** 编辑区最小可读宽度；和 CSS 的 --editor-min-w 同源，改一处即可 */
+function editorMinWidth(): number {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--editor-min-w')
+  return Number.parseFloat(raw) || 420
+}
+
+/**
+ * 「这一侧面板 + 编辑区」之外的所有固定占用：两条竖条、间距、另一侧面板。
+ * 拖动时面板会脱离文档流，那时量不准，所以只在按下的一刻取一次。
+ */
+function chromeAround(side: 'drawer' | 'panel'): number {
+  const body = el('body')
+  const editor = el('editorIsland').getBoundingClientRect().width
+  const self =
+    side === 'drawer'
+      ? el('drawer').getBoundingClientRect().width
+      : el('rightPanel').getBoundingClientRect().width
+  return Math.max(0, body.clientWidth - editor - self)
+}
+
+/**
+ * 一侧面板的宽度上限。
+ * 不再限制「最多能拖多宽」——想拉满慢慢看是合理需求，关面板有按钮；
+ * 唯一的约束是编辑区不能被挤到 --editor-min-w 以下。
+ */
+function clampSideWidth(px: number, min: number, chrome: number): number {
+  const room = el('body').clientWidth - chrome - editorMinWidth()
+  const max = Math.max(min, room)
+  return Math.min(max, Math.max(min, Math.round(px)))
+}
+
+function clampPanelWidth(px: number, chrome = chromeAround('panel')): number {
+  return clampSideWidth(px, PANEL_MIN, chrome)
 }
 
 /**
@@ -2417,15 +2496,9 @@ function applyPanelWidth(px: number): number {
   return width
 }
 
-const DRAWER_MIN = 200
-const DRAWER_MAX = 520
-/** 抽屉再宽也得给编辑区留这么多，不然层级看清了、代码看不见 */
-const DRAWER_RESERVED = 560
-
-function clampDrawerWidth(px: number): number {
-  const room = el('body').clientWidth - DRAWER_RESERVED
-  const max = Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, room))
-  return Math.min(max, Math.max(DRAWER_MIN, Math.round(px)))
+/** 抽屉和预览面板用同一套规则：上限只由编辑区最小宽度决定 */
+function clampDrawerWidth(px: number, chrome = chromeAround('drawer')): number {
+  return clampSideWidth(px, DRAWER_MIN, chrome)
 }
 
 /**
@@ -2449,6 +2522,8 @@ function wireDrawerResizer() {
     ev.stopPropagation()
     const startX = ev.clientX
     const startW = drawer.width
+    // 按下时量一次固定占用：拖动过程中面板宽度在变，量出来会漂
+    const chrome = chromeAround('drawer')
     let last = startW
     handle.setPointerCapture(ev.pointerId)
     handle.classList.add('is-dragging')
@@ -2458,7 +2533,7 @@ function wireDrawerResizer() {
 
     // 拖动阶段只改宽度和左边距，不主动 layout：每帧重排编辑器太贵
     const move = (e: PointerEvent) => {
-      last = clampDrawerWidth(startW + (e.clientX - startX))
+      last = clampDrawerWidth(startW + (e.clientX - startX), chrome)
       drawer.setWidth(last)
     }
     const end = () => {
@@ -2508,6 +2583,8 @@ function wirePanelResizer() {
     ev.preventDefault()
     const startX = ev.clientX
     const startW = panel.getBoundingClientRect().width
+    // 同抽屉：面板浮起来之后几何值不可信，固定占用只在按下时量
+    const chrome = chromeAround('panel')
     handle.setPointerCapture(ev.pointerId)
     handle.classList.add('is-dragging')
     document.body.classList.add('is-resizing')
@@ -2523,7 +2600,7 @@ function wirePanelResizer() {
 
     const move = (e: PointerEvent) => {
       // 面板贴在编辑区右侧，向左拖才变宽
-      panel.style.width = `${clampPanelWidth(startW - (e.clientX - startX))}px`
+      panel.style.width = `${clampPanelWidth(startW - (e.clientX - startX), chrome)}px`
     }
     const end = () => {
       handle.removeEventListener('pointermove', move)
@@ -2565,18 +2642,31 @@ function wirePanelResizer() {
   })
 }
 
-function togglePreview(force?: boolean) {
+function togglePanel(tab: RightTab, force?: boolean) {
   const rec = state.current
-  const want = force ?? !state.previewOpen
-  if (want && (!rec || currentLang() !== 'markdown')) {
+  if (!rec) return
+  if (tab === 'preview' && currentLang() !== 'markdown') {
     toast(t('toast.previewUnsupported'))
     return
   }
+  // 再点当前这一页才是收起；点另一边是换页
+  const want = force ?? !(state.previewOpen && state.rightTab === tab)
+  state.rightTab = tab
   state.previewOpen = want
   el('rightPanel').classList.toggle('is-open', want)
-  el('previewBtn').classList.toggle('is-active', want)
-  if (want) renderPreviewNow()
+  syncPanelChrome()
+  if (want) renderActivePanel()
   requestAnimationFrame(() => state.editor?.layout())
+}
+
+/** 面板只有一页是可见的，切换/刷新都从这里走，免得两页抢着写 DOM */
+function renderActivePanel() {
+  if (!state.previewOpen) return
+  if (state.rightTab === 'outline') {
+    renderOutlineNow()
+    return
+  }
+  if (currentLang() === 'markdown') renderPreviewNow()
 }
 
 let previewSeq = 0
@@ -2586,12 +2676,10 @@ function currentTheme(): 'dark' | 'light' {
 }
 
 function renderPreviewNow() {
-  if (!state.previewOpen) return
-  // 预览只画 Markdown：切到日志之类的文件时先收起，别把几十 MB 文本丢给 marked
-  if (currentLang() !== 'markdown') {
-    togglePreview(false)
-    return
-  }
+  if (!state.previewOpen || state.rightTab !== 'preview') return
+  // 预览只画 Markdown：切到日志之类的文件时由 syncPanelButtons 转到大纲，
+  // 别把几十 MB 文本丢给 marked
+  if (currentLang() !== 'markdown') return
   const body = el('previewBody')
   const seq = ++previewSeq
   const scrollTop = body.scrollTop
@@ -2614,9 +2702,70 @@ function refreshPreviewTheme() {
 }
 
 function schedulePreview() {
-  if (!state.previewOpen) return
+  if (!state.previewOpen || state.rightTab !== 'preview') return
   window.clearTimeout(previewTimer)
   previewTimer = window.setTimeout(renderPreviewNow, 250)
+}
+
+/* ---------------------------------------------------------------- 大纲 */
+
+let outlineItems: OutlineItem[] = []
+let outlineTimer = 0
+/** 光标行，用来在大纲里标出「你在哪一节」 */
+let cursorLine = 1
+
+function renderOutlineNow() {
+  const host = el('outlineBody')
+  if (!state.current) {
+    outlineItems = []
+    host.replaceChildren()
+    return
+  }
+  // 与轻量模式同一条线：这么大的文件扫结构不如直接用查找
+  if (state.text.length > LIMITS.light) {
+    outlineItems = []
+    host.innerHTML = `<p class="outline-empty">${t('outline.tooBig')}</p>`
+    return
+  }
+  outlineItems = extractOutline(state.text, currentLang())
+  if (!outlineItems.length) {
+    host.innerHTML = `<p class="outline-empty">${t('outline.empty')}</p>`
+    return
+  }
+  const frag = document.createDocumentFragment()
+  outlineItems.forEach((item, index) => {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'outline-item'
+    btn.dataset.index = String(index)
+    btn.style.paddingLeft = `${8 + (item.level - 1) * 12}px`
+    btn.textContent = item.label
+    btn.title = t('outline.line', { line: item.line })
+    frag.append(btn)
+  })
+  host.replaceChildren(frag)
+  syncOutlineActive()
+}
+
+function scheduleOutline() {
+  if (!state.previewOpen || state.rightTab !== 'outline') return
+  window.clearTimeout(outlineTimer)
+  outlineTimer = window.setTimeout(renderOutlineNow, 350)
+}
+
+/** 标出光标所在条目；只在滚出可视范围时才滚动，否则每敲一个字整列都在抖 */
+function syncOutlineActive() {
+  if (!state.previewOpen || state.rightTab !== 'outline') return
+  const host = el('outlineBody')
+  const index = activeIndex(outlineItems, cursorLine)
+  const nodes = host.querySelectorAll<HTMLElement>('.outline-item')
+  nodes.forEach((node, i) => node.classList.toggle('is-active', i === index))
+  const node = nodes[index]
+  if (!node) return
+  const top = node.offsetTop
+  if (top < host.scrollTop || top + node.offsetHeight > host.scrollTop + host.clientHeight) {
+    host.scrollTop = Math.max(0, top - host.clientHeight / 3)
+  }
 }
 
 /* ------------------------------------------------------------ 快捷键 */

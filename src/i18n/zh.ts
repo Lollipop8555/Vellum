@@ -36,6 +36,7 @@ export const zh = {
   'rail.trashTip': '回收站（{n}）',
   'rail.snapshots': '快照',
   'rail.preview': 'Markdown 预览',
+  'rail.outline': '大纲（快速定位）',
   'rail.transforms': '文本加工',
   'rail.stats': '文档信息',
   'rail.diff': '与历史版本对比',
@@ -53,7 +54,11 @@ export const zh = {
   'drawer.clearSearch': '清空搜索',
 
   'panel.preview': '预览',
+  'panel.outline': '大纲',
   'panel.resize': '拖动调整宽度，双击还原',
+  'outline.empty': '这个文件里没有可识别的结构（标题、函数、类、键名）。',
+  'outline.tooBig': '文件太大，暂不生成大纲；可以先用查找定位。',
+  'outline.line': '第 {line} 行',
   'drawer.resize': '拖动调整宽度，双击还原',
 
   'status.light': '轻量模式',

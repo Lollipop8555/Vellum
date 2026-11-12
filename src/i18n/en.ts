@@ -38,6 +38,7 @@ export const en: Record<keyof typeof zh, string> = {
   'rail.trashTip': 'Trash ({n})',
   'rail.snapshots': 'Snapshots',
   'rail.preview': 'Markdown preview',
+  'rail.outline': 'Outline (jump around)',
   'rail.transforms': 'Transform text',
   'rail.stats': 'Document info',
   'rail.diff': 'Compare with snapshot',
@@ -54,7 +55,11 @@ export const en: Record<keyof typeof zh, string> = {
   'drawer.clearSearch': 'Clear search',
 
   'panel.preview': 'Preview',
+  'panel.outline': 'Outline',
   'panel.resize': 'Drag to resize, double-click to reset',
+  'outline.empty': 'Nothing structural found here (headings, functions, classes, keys).',
+  'outline.tooBig': 'File is too large for an outline — use find to jump around instead.',
+  'outline.line': 'Line {line}',
   'drawer.resize': 'Drag to resize, double-click to reset',
 
   'status.light': 'light mode',
