@@ -51,7 +51,14 @@ import { getSettings, loadSettings, updateSettings } from './settings'
 import { DEFAULT_FORMAT, canFormat, formatText } from './format'
 import { transformText, type TransformId } from './transform'
 import { FileLock } from './lock'
-import { initTabs, notifyFiles, readTabFile, rememberTabFile } from './tabs'
+import {
+  initTabs,
+  notifyFiles,
+  probeOpenElsewhere,
+  readTabFile,
+  rememberTabFile,
+  tabWindowName,
+} from './tabs'
 import { Drawer } from '../ui/layout'
 import { applyTheme } from '../ui/theme'
 import { toast } from '../ui/toast'
@@ -229,10 +236,17 @@ export async function startApp() {
 
   wireTabs()
 
-  // 只恢复「本标签页」上次打开的文件：刷新页面照旧，新开标签页是干净的，
-  // 不会再被另一个标签页正在编辑的文件顶掉
-  const lastId = readTabFile()
+  // 地址里带 #file= 就落回那个文件（新标签页打开、复制链接都靠它）；
+  // 否则恢复「本标签页」上次的文件：刷新照旧，新开的标签页仍是干净的
+  const lastId = fileFromHash() ?? readTabFile()
   if (lastId) await openRecord(lastId)
+
+  // 手改地址栏、或在别的标签页里用后退回到旧地址时，跟着换文件
+  window.addEventListener('hashchange', () => {
+    const id = fileFromHash()
+    if (!id || id === state.current?.id) return
+    void openRecord(id)
+  })
 
   void store.requestPersistence()
   prefetchMonaco()
@@ -867,10 +881,61 @@ async function contentBlob(
   return new Blob([normalizeEol(text, node.eol)], { type: 'text/plain' })
 }
 
+/* ------------------------------------------------------ 用浏览器标签页打开 */
+
+/** 文件的地址：hash 带上 id，刷新、复制链接、新标签页都能落到同一个文件 */
+function fileUrl(id: string): string {
+  const url = new URL(window.location.href)
+  url.hash = `file=${id}`
+  return url.toString()
+}
+
+function fileFromHash(): string | null {
+  const m = /^#file=(.+)$/.exec(window.location.hash)
+  if (!m) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    return m[1]
+  }
+}
+
+/** 地址栏跟着当前文件走，但不产生历史记录（否则后退会变成切文件） */
+function syncHash(id: string | null) {
+  const hash = id ? `#file=${id}` : ''
+  if (window.location.hash === hash) return
+  try {
+    const url = new URL(window.location.href)
+    url.hash = hash
+    window.history.replaceState(null, '', url.toString())
+  } catch {
+    /* file:// 之类的宿主可能不让改地址，功能降级即可 */
+  }
+}
+
+/**
+ * 用浏览器标签页打开文件：浏览器本身就是编辑器的标签栏。
+ * 文件已在别的标签页开着就切过去——同一文件开两份只会互抢写锁。
+ */
+async function openFileInTab(id: string) {
+  if (await probeOpenElsewhere(id)) {
+    // 同名窗口会被复用：那个标签页打开这个文件时把文件名写进了 window.name。
+    // 这里刻意不开 noopener —— 浏览器只在同一个上下文组里按名字找窗口，
+    // 掐掉 opener 关系就等于各开各的，跳转永远落空。
+    window.open(fileUrl(id), tabWindowName(id))
+    return
+  }
+  window.open(fileUrl(id), '_blank')
+}
+
 /** line 只用于搜索命中跳转：打开后把光标带到那一行 */
 async function openRecord(id: string, line?: number) {
   const node = await store.getNode(id)
-  if (!node || node.kind !== 'file' || node.deletedAt !== null) return
+  if (!node || node.kind !== 'file' || node.deletedAt !== null) {
+    // 地址里是个已经没了的文件：顺手擦掉，别让刷新一直撞空
+    if (fileFromHash() === id) syncHash(null)
+    return
+  }
 
   // 打开文件即离开批量上下文（§13.2）
   clearSelection()
@@ -900,6 +965,7 @@ async function openRecord(id: string, line?: number) {
   if (line && line > 0) state.editor?.goToLine(line)
 
   rememberTabFile(id)
+  syncHash(id)
   el('emptyState').hidden = true
   await refreshSnapshots()
   await refreshFiles()
@@ -921,6 +987,7 @@ function closeCurrent() {
   state.snapshots = []
   lock.release()
   rememberTabFile(null)
+  syncHash(null)
   el('editorHost').innerHTML = ''
   el('emptyState').hidden = false
   closePanel()
@@ -1943,6 +2010,8 @@ function renderDrawerList() {
       create: (parentId, kind) => void createNode(kind, parentId),
       select: (id, mode) => selectNode(id, mode),
       drop: (id, parentId) => void dropMove(id, parentId),
+      openTab: (id) => void openFileInTab(id),
+      elsewhere: (id) => probeOpenElsewhere(id),
     },
   })
 }

@@ -29,6 +29,10 @@ export interface TreeHandlers {
   exportNode(id: string): void
   /** 在这个文件夹里新建（文件夹菜单里的「新建文件 / 新建文件夹」） */
   create(parentId: string, kind: 'file' | 'folder'): void
+  /** 用浏览器新标签页打开；那个文件已在别处开着时切过去 */
+  openTab(id: string): void
+  /** 是否已有别的标签页开着它：菜单文案据此改写 */
+  elsewhere(id: string): Promise<boolean>
 }
 
 export interface TreeOptions {
@@ -101,6 +105,14 @@ function renderRow(
   if (node.kind === 'folder') row.classList.toggle('is-open', opts.expanded.has(node.id))
 
   row.addEventListener('pointerdown', (e) => beginDrag(e, node, opts, row))
+
+  // 右键弹出和 ⋯ 同一个菜单，落点在鼠标处：列表上直接右键是最顺手的路径
+  row.addEventListener('contextmenu', (e) => {
+    // 重命名输入框里右键要的是系统菜单（复制/粘贴）
+    if ((e.target as HTMLElement).closest('input')) return
+    e.preventDefault()
+    showMenu(node, opts, { x: e.clientX, y: e.clientY, align: 'left' })
+  })
 
   // 层级引导线：每层一条竖线，靠占位块撑出缩进，比单纯 padding 更容易看清从属
   for (let i = 0; i < depth; i += 1) {
@@ -197,7 +209,8 @@ function renderRow(
   more.title = t('action.more')
   more.addEventListener('click', (e) => {
     e.stopPropagation()
-    showMenu(more, node, opts)
+    const r = more.getBoundingClientRect()
+    showMenu(node, opts, { x: r.right, y: r.bottom + 4, align: 'right' })
   })
   row.appendChild(more)
 
@@ -346,19 +359,40 @@ export function renderTrashList(
 /* ------------------------------------------------------------------ 菜单 */
 
 interface MenuItem {
+  /** 需要事后改文案的项（例如探测到别的标签页已打开） */
+  key?: string
   label: string
   danger?: boolean
   run(): void
 }
 
+/** 菜单出现的位置：⋯ 按钮右对齐，右键则落在指针处 */
+interface MenuPoint {
+  x: number
+  y: number
+  align: 'left' | 'right'
+}
+
 let openMenu: HTMLElement | null = null
+/** 挂在 document 上的外部点击监听，关菜单时要一起摘掉，否则会误伤下一次菜单 */
+let menuAway: ((e: PointerEvent) => void) | null = null
 
 export function closeTreeMenu(): void {
+  if (menuAway) {
+    document.removeEventListener('pointerdown', menuAway)
+    menuAway = null
+  }
   openMenu?.remove()
   openMenu = null
 }
 
-function showMenu(anchor: HTMLElement, node: NodeRecord, opts: TreeOptions): void {
+function placeMenu(menu: HTMLElement, at: MenuPoint): void {
+  const left = at.align === 'right' ? at.x - menu.offsetWidth : at.x
+  menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - menu.offsetWidth - 8))}px`
+  menu.style.top = `${Math.max(8, Math.min(at.y, window.innerHeight - menu.offsetHeight - 8))}px`
+}
+
+function showMenu(node: NodeRecord, opts: TreeOptions, at: MenuPoint): void {
   closeTreeMenu()
 
   const items: (MenuItem | { sep: true })[] = []
@@ -375,7 +409,10 @@ function showMenu(anchor: HTMLElement, node: NodeRecord, opts: TreeOptions): voi
     { label: t('action.move'), run: () => opts.handlers.move(node.id) },
   )
   if (isFile(node)) {
-    items.push({ label: t('action.compare'), run: () => opts.handlers.compare(node.id) })
+    items.push(
+      { key: 'tab', label: t('action.openTab'), run: () => opts.handlers.openTab(node.id) },
+      { label: t('action.compare'), run: () => opts.handlers.compare(node.id) },
+    )
   } else {
     items.push({ label: t('action.exportFolder'), run: () => opts.handlers.exportNode(node.id) })
   }
@@ -383,6 +420,7 @@ function showMenu(anchor: HTMLElement, node: NodeRecord, opts: TreeOptions): voi
 
   const menu = document.createElement('div')
   menu.className = 'tree-menu'
+  const byKey = new Map<string, HTMLButtonElement>()
   for (const it of items) {
     if ('sep' in it) {
       const line = document.createElement('div')
@@ -394,6 +432,7 @@ function showMenu(anchor: HTMLElement, node: NodeRecord, opts: TreeOptions): voi
     b.type = 'button'
     b.className = `tree-menu-item${it.danger ? ' is-danger' : ''}`
     b.textContent = it.label
+    if (it.key) byKey.set(it.key, b)
     b.addEventListener('click', (e) => {
       e.stopPropagation()
       closeTreeMenu()
@@ -403,16 +442,29 @@ function showMenu(anchor: HTMLElement, node: NodeRecord, opts: TreeOptions): voi
   }
 
   document.body.appendChild(menu)
-  const r = anchor.getBoundingClientRect()
-  menu.style.left = `${Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`
-  menu.style.top = `${Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8)}px`
+  placeMenu(menu, at)
   openMenu = menu
 
-  const away = (e: PointerEvent) => {
+  menuAway = (e: PointerEvent) => {
     if (menu.contains(e.target as Node)) return
     closeTreeMenu()
   }
-  setTimeout(() => document.addEventListener('pointerdown', away, { once: true }))
+  // 打开菜单的那次 pointerdown 已经过去了，挂到下一个 tick，否则立刻自关
+  setTimeout(() => {
+    if (openMenu === menu) document.addEventListener('pointerdown', menuAway!)
+  })
+
+  // 别的标签页已经开着这个文件：改说「切过去」，别让人以为要再开一个。
+  // 探测有延迟，先按「新开」显示，回来了再改字并重新贴边。
+  if (isFile(node)) {
+    void opts.handlers.elsewhere(node.id).then((open) => {
+      const b = byKey.get('tab')
+      if (!open || !b || !b.isConnected) return
+      b.textContent = t('action.focusTab')
+      b.title = t('action.focusTabHint')
+      placeMenu(menu, at)
+    })
+  }
 }
 
 /* ---------------------------------------------------------------- 搜索高亮 */
