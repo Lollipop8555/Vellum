@@ -19,15 +19,30 @@ export function setCount(text: string) {
   })
 }
 
-export function setCache(used: number, quota: number) {
-  $('stCache').textContent = t('status.cache', {
-    used: formatBytes(used),
-    quota: quota ? formatBytes(quota) : '—',
-  })
+/**
+ * 当前文件大小（D-22）。整站缓存的占用口径放在抽屉底部，
+ * 状态栏只说「这个文件多大」，两处数字对不上时不会互相误导。
+ */
+export function setSize(bytes: number | null) {
+  const chip = $('stCache')
+  chip.hidden = bytes === null
+  if (bytes === null) return
+  chip.textContent = t('status.size', { size: formatBytes(bytes) })
 }
 
 export function setEncoding(label: string) {
   $('stEncoding').textContent = label
+}
+
+/**
+ * 保存状态（O15）：Ctrl/Cmd+S 只落库，落库与否要有地方看得见。
+ * idle 表示没有打开文件，不显示任何字。
+ */
+export function setSaved(state: 'saved' | 'unsaved' | 'idle') {
+  const chip = $('stSaved')
+  chip.hidden = state === 'idle'
+  chip.textContent = state === 'saved' ? t('status.saved') : t('status.unsaved')
+  chip.classList.toggle('is-dirty', state === 'unsaved')
 }
 
 export function setLanguage(label: string) {
@@ -70,14 +85,18 @@ export type HighlightState = 'on' | 'off' | 'na'
 /**
  * 大文件的语法高亮开关，点击切换；只在值得提醒时出现。
  * `alt` 是「另一个引擎能着色」时给的那个引擎：徽标上挂它的图标，
- * 看见的是「换过去就行」，而不是一行「当前引擎不支持」的字。
+ * 文案也跟着说「换 Monaco 着色」——只写「无语法」会让人以为文件没救，
+ * 也容易把对方引擎的图标误读成当前引擎。
  */
 export function setHighlight(state: HighlightState, show: boolean, alt: EngineId | null = null) {
   const chip = $('stHighlight')
   chip.hidden = !show
-  const label = t(
-    state === 'on' ? 'status.highlight' : state === 'off' ? 'status.highlightOff' : 'status.highlightNa',
-  )
+  const label =
+    state === 'na' && alt
+      ? t('status.highlightSwitch', { engine: ENGINE_NAMES[alt] })
+      : t(
+          state === 'on' ? 'status.highlight' : state === 'off' ? 'status.highlightOff' : 'status.highlightNa',
+        )
   chip.innerHTML = alt ? `${engineIcon(alt)}<span>${label}</span>` : label
   chip.title = t(
     state === 'na' && alt

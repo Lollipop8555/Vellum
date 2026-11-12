@@ -124,6 +124,125 @@ export function confirmDialog(
   })
 }
 
+/**
+ * 居中取名对话框：新建文件 / 文件夹这类「关掉就该有结果」的场景用。
+ * 开着 `submitOnDismiss` 时，点遮罩空白与 Esc 都等于确认——没有「窗口关了却什么也没发生」
+ * 的中间态。校验不过时回车留在窗口里说明原因；空白/Esc 这种「想走」的操作则直接放弃，
+ * 免得把人锁在窗口里出不去。
+ */
+export function promptDialog(opts: {
+  title: string
+  value?: string
+  hint?: string
+  placeholder?: string
+  submitOnDismiss?: boolean
+  validate?: (raw: string) => string | null
+}): Promise<string | null> {
+  return new Promise((resolve) => {
+    const body = document.createElement('div')
+
+    if (opts.hint) {
+      const hint = document.createElement('div')
+      hint.className = 'dialog-hint'
+      hint.textContent = opts.hint
+      body.appendChild(hint)
+    }
+
+    const input = document.createElement('input')
+    input.className = 'dialog-input'
+    input.type = 'text'
+    input.value = opts.value ?? ''
+    input.spellcheck = false
+    input.autocomplete = 'off'
+    if (opts.placeholder) input.placeholder = opts.placeholder
+
+    const err = document.createElement('div')
+    err.className = 'dialog-err'
+    err.hidden = true
+
+    body.append(input, err)
+
+    const foot = document.createElement('div')
+    const cancel = document.createElement('button')
+    cancel.className = 'btn btn-ghost'
+    cancel.textContent = t('action.cancel')
+    const ok = document.createElement('button')
+    ok.className = 'btn btn-primary'
+    ok.textContent = t('action.confirm')
+    foot.append(cancel, ok)
+
+    let settled = false
+    let dialog: DialogHandle
+
+    const finish = (value: string | null) => {
+      if (settled) return
+      settled = true
+      document.removeEventListener('keydown', onKey, true)
+      dialog.close()
+      resolve(value)
+    }
+
+    const submit = (fromDismiss = false) => {
+      const raw = input.value.trim()
+      const message = opts.validate?.(raw) ?? null
+      if (message) {
+        if (fromDismiss) {
+          finish(null)
+          return
+        }
+        err.textContent = message
+        err.hidden = false
+        input.focus()
+        return
+      }
+      finish(raw)
+    }
+
+    const onKey = (e: KeyboardEvent) => {
+      // 输入法回车是在上屏候选词，不能当成确认
+      if (e.isComposing) return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        e.stopPropagation()
+        submit()
+        return
+      }
+      if (e.key === 'Escape' && opts.submitOnDismiss) {
+        e.stopPropagation()
+        submit(true)
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+
+    dialog = openDialog({
+      title: opts.title,
+      body,
+      foot,
+      narrow: true,
+      onClose: () => {
+        if (settled) return
+        settled = true
+        document.removeEventListener('keydown', onKey, true)
+        resolve(null)
+      },
+    })
+
+    cancel.onclick = () => finish(null)
+    ok.onclick = () => submit()
+    // 点遮罩空白：要「关掉即确认」就改成提交，否则沿用 openDialog 默认的取消
+    if (opts.submitOnDismiss) {
+      layer().onclick = (e) => {
+        if (e.target === layer()) submit(true)
+      }
+    }
+
+    // 默认选中主名（不含后缀）：直接打字就能替换掉「未命名-1」，不用先删
+    const dot = input.value.lastIndexOf('.')
+    input.focus()
+    input.setSelectionRange(0, dot > 0 ? dot : input.value.length)
+  })
+}
+
 export function helpDialog() {
   const rows: [string, string][] = [
     ['Ctrl/Cmd + S', t('help.save')],

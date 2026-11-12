@@ -1,4 +1,5 @@
 import './ui/styles.css'
+import './ui/tree.css'
 import { startApp } from './shell/app'
 
 void startApp()

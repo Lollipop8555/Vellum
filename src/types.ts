@@ -1,3 +1,5 @@
+import type { LangId } from './editors/lang-registry'
+
 export type EngineId = 'cm' | 'monaco'
 
 export type EncodingId =
@@ -9,28 +11,74 @@ export type EncodingId =
   | 'shift_jis'
   | 'windows-1252'
 
-/** 只有 utf-8 支持写回；其余仅解码 */
-export const WRITABLE_ENCODINGS: EncodingId[] = ['utf-8']
+export type NodeKind = 'file' | 'folder'
 
-export interface FileRecord {
+/**
+ * 文件与文件夹共享的元信息。内容不在这里——见 ContentRecord。
+ * 设计依据：plans/resource-management.md §3
+ */
+export interface NodeBase {
   id: string
+  kind: NodeKind
+  /** 权威全名，含后缀。重命名只改这里 */
   name: string
+  /** 派生冗余：小写、不含点、无后缀为 ''。由 splitName(name) 计算，禁止手写 */
+  ext: string
+  /** NFC + toLowerCase(name)，用于唯一性比较与搜索 */
+  nameKey: string
+  /** null = 根目录下 */
+  parentId: string | null
+  createdAt: number
+  /** 仅内容变更时更新；重命名、移动、改属性一律不改 */
+  updatedAt: number
+  /** 软删除时间；null = 未删除。只有「删除动作的顶层节点」带值 */
+  deletedAt: number | null
+}
+
+export interface FileNode extends NodeBase {
+  kind: 'file'
   size: number
-  blob: Blob
-  lang: string
-  /** true：用户手动指定过语言；缺省：按扩展名推断，推断不出再嗅探内容 */
-  langManual?: boolean
+  /** 用户手动指定的语言；null = 自动 */
+  langOverride: LangId | null
+  /** 有效语言，落库定值。运行时直接使用，不嗅探 */
+  lang: LangId
+  /** 仅用于属性面板展示语言来源 */
+  langSource: 'ext' | 'sniff' | 'manual'
+  /** 当前存储编码。规范化导入后恒为 'utf-8' */
   encoding: EncodingId
+  /** 导入时探测到的源编码，仅用于展示；首次内容变更后清空 */
+  sourceEncoding?: EncodingId
   eol: 'lf' | 'crlf'
   engine: EngineId
-  readOnly: boolean
-  dirty: boolean
-  /** 仅在支持 File System Access 且用户授权后存在，无法跨浏览器迁移 */
-  handle?: FileSystemFileHandle
-  /** 原始字节副本，用于“以其他编码重新解码”；大文件不保存 */
+  /** 用户主动锁定（跨标签页生效，落库） */
+  readOnlyUser: boolean
+}
+
+export interface FolderNode extends NodeBase {
+  kind: 'folder'
+}
+
+export type NodeRecord = FileNode | FolderNode
+
+/** 文件内容，按需读取。缺失 = 空文件 */
+export interface ContentRecord {
+  /** === FileNode.id */
+  id: string
+  /** 规范形态字节（UTF-8，已应用 eol）；未编辑文件可能不存在 */
+  blob?: Blob
+  /** 原始字节，供「以其他编码重新解码」与逐字节保真导出 */
   originalBytes?: Blob
-  createdAt: number
-  updatedAt: number
+}
+
+/**
+ * 运行时打开视图：节点元信息 + 内容 + 会话态。
+ * blob/dirty/readOnly 都是会话态，永远不落库。
+ */
+export interface OpenFile extends FileNode {
+  blob: Blob | null
+  dirty: boolean
+  /** 合成值：readOnlyUser || 他人持锁 || 大文件只读模式 */
+  readOnly: boolean
 }
 
 export interface SnapshotRecord {
@@ -64,6 +112,8 @@ export interface Settings {
   wordWrap: boolean
   /** Markdown 预览面板宽度，单位 px */
   panelWidth: number
+  /** 左侧抽屉宽度，单位 px；层级深的目录树靠它撑开 */
+  drawerWidth: number
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -74,4 +124,5 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultEngine: 'cm',
   wordWrap: false,
   panelWidth: 440,
+  drawerWidth: 264,
 }

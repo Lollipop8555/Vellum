@@ -1,0 +1,356 @@
+/* ---------- 文件树 / 回收站 ---------- */
+
+/* 底部按钮从「一个占满整行」改成自动换行的按钮组 */
+.drawer-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 库内总计 / 配额（D-22）：只报库内净值，整站占用放在 title 里 */
+.drawer-storage {
+  flex: 0 0 auto;
+  padding: 2px 10px 6px;
+  color: var(--c-faint);
+  font-size: 11px;
+  font-family: var(--mono-font);
+  border-top: 1px solid var(--c-border-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drawer-storage.is-warn {
+  color: var(--c-warn);
+}
+
+/* 插入线是 ::before / ::after，行本身要当定位上下文 */
+.tree-row {
+  position: relative;
+}
+
+/* 拖到列表空白处 = 根目录 */
+.drawer-list.is-drop-root {
+  box-shadow: inset 0 0 0 1px var(--c-accent);
+}
+
+/* 多选（§13.2）：比当前文件更实一点，避免和高亮混在一起 */
+.tree-row.is-selected {
+  background: var(--c-sel);
+}
+
+.tree-row.is-selected:hover {
+  background: var(--c-sel);
+}
+
+/* 空文件淡化 + 空标记（§6），和多选清理配套 */
+.tree-row.is-empty .tree-name {
+  color: var(--c-faint);
+}
+
+.item-empty {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  color: var(--c-faint);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* 拖拽移动（P4）：into = 整行描边，before/after = 一条插入线 */
+.tree-row.is-dragging {
+  opacity: 0.45;
+}
+
+.tree-row.is-drop-into {
+  background: var(--c-accent-weak);
+  box-shadow: inset 0 0 0 1px var(--c-accent);
+}
+
+.tree-row.is-drop-before::before,
+.tree-row.is-drop-after::after {
+  content: '';
+  position: absolute;
+  left: calc(7px + var(--depth, 0) * 16px);
+  right: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--c-accent);
+  pointer-events: none;
+}
+
+.tree-row.is-drop-before::before {
+  top: -1px;
+}
+
+.tree-row.is-drop-after::after {
+  bottom: -1px;
+}
+
+.tree-drag-ghost {
+  position: fixed;
+  z-index: 120;
+  pointer-events: none;
+  margin: 0;
+  padding: 6px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--c-island);
+  border: 1px solid var(--c-accent);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  opacity: 0.9;
+  font: inherit;
+  color: var(--c-text);
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 拖拽期间别让指针顺手选中文字 */
+body.is-tree-dragging,
+body.is-tree-dragging * {
+  user-select: none;
+  cursor: grabbing;
+}
+
+/* 搜索命中的路径片段（O24） */
+.tree-row mark {
+  background: var(--c-find);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.drawer-foot .btn {
+  width: auto;
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+
+/*
+ * 层级缩进不靠 padding，而是每层一个 .tree-guide 占位块：
+ * 12px 宽 + 4px 行内 gap = 每层 16px，竖线画在块内 8px 处，
+ * 正好落在上一层折叠箭头的中心，缩进与引导线才对得上。
+ */
+.tree-row {
+  padding-left: 7px;
+  gap: 4px;
+}
+
+.tree-guide {
+  flex: 0 0 12px;
+  align-self: stretch;
+  position: relative;
+}
+
+.tree-guide::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 8px;
+  width: 1px;
+  background: var(--c-guide);
+}
+
+.tree-row.is-current {
+  background: var(--c-accent-weak);
+}
+
+/* 折叠箭头：13px 折角 + 90° 旋转，命中区仍留在行高内 */
+.tree-twisty {
+  width: 16px;
+  height: 18px;
+  flex: 0 0 auto;
+  /* 两行高的行里，箭头要跟第一行的名字对齐，压在中间会显得飘 */
+  align-self: flex-start;
+  margin-top: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+}
+
+.tree-twisty svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 120ms ease;
+}
+
+.tree-twisty.is-open svg {
+  transform: rotate(90deg);
+}
+
+.tree-twisty:hover {
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+/* 文件夹比文件重一档：一层层展开后，靠粗细也能分出「这是容器」 */
+.tree-row[data-kind='folder'] .tree-name {
+  font-weight: 600;
+}
+
+.tree-row .item-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: block;
+}
+
+.tree-icon {
+  font-size: 12px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.tree-row .item-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-more {
+  flex: 0 0 auto;
+  opacity: 0;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--c-dim);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tree-row:hover .tree-more,
+.tree-row.is-current .tree-more {
+  opacity: 1;
+}
+
+.tree-more:hover {
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+.tree-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  color: var(--c-text);
+  background: var(--c-island);
+  border: 1px solid var(--c-accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  outline: none;
+}
+
+.tree-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 132px;
+  padding: 4px;
+  background: var(--c-island);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 45%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-menu-item {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--c-text);
+  font: inherit;
+  padding: 6px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.tree-menu-item:hover {
+  background: var(--c-island-2);
+}
+
+.tree-menu-item.is-danger {
+  color: var(--c-danger);
+}
+
+/* 分组线：文件夹菜单里「往里建」和「改名/移动」是两类事 */
+.tree-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--c-border-soft);
+}
+
+.tree-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.tree-actions .btn {
+  padding: 2px 6px;
+  font-size: 11.5px;
+}
+
+.tree-actions .btn.is-danger {
+  color: var(--c-danger);
+}
+
+.trash-summary {
+  padding: 4px 8px 8px;
+  color: var(--c-faint);
+  font-size: 11.5px;
+}
+
+/* 导出进度：条子细一点，别把弹窗撑高 */
+.progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--c-border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--c-accent);
+  transition: width 120ms linear;
+}
+
+.progress-note {
+  margin-bottom: 8px;
+  color: var(--c-faint);
+  font-size: 11.5px;
+}
+
+.move-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow: auto;
+  margin: 10px 0;
+}
+
+.move-targets .btn {
+  justify-content: flex-start;
+  text-align: left;
+  width: 100%;
+}

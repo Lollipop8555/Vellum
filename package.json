@@ -18,6 +18,7 @@
     "vendor:check": "node scripts/vendor-engines.mjs --check"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "marked": "^15.0.6",
     "mermaid": "^12.3.0",
     "prettier": "^3.4.2",

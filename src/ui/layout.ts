@@ -1,103 +1,93 @@
 /**
- * 抽屉两阶段动画：
- * 阶段一 只做 transform 位移（合成器，不重排）
- * 阶段二 动画结束后一次性把编辑区左边距推开，让岛本身变窄，并调用一次 layout()
- * 关闭时顺序相反：先撤销边距并 layout 一次（面板仍盖住该区域），再滑出
+ * 左侧面板：只有「展开 / 收起」两态。
+ *
+ * 面板是 flex 流里的一张岛，展开就把编辑区挤窄，不再是覆盖用的浮层；
+ * 宽度做 170ms 过渡，动画结束后才重排一次编辑器 ——
+ * 每帧 measure 会让 CodeMirror/Monaco 反复重算，代价远大于这点动画。
+ * 内容宽度锁在 --drawer-w 上（见 .drawer-inner），动画只改外层宽度，
+ * 树里的几百行不会跟着每帧重排。
  */
 export class Drawer {
-  private running: Animation | null = null
-  private shown = false
+  private open: boolean
+  private settleTimer = 0
+
+  /** 开合后的通知，供外部同步图标状态 */
+  onChange: (open: boolean) => void = () => {}
 
   constructor(
     private panel: HTMLElement,
-    private editorEl: HTMLElement,
     private onLayout: () => void,
-  ) {}
+  ) {
+    // 初始态由 HTML 给出（默认展开），读回来避免第一次同步时图标与面板错位
+    this.open = panel.dataset.state !== 'closed'
+    panel.setAttribute('aria-hidden', String(!this.open))
+    panel.toggleAttribute('inert', !this.open)
 
-  get isOpen() {
-    return this.shown
+    // 宽度过渡收尾 = 这一轮几何变化的终点，只在这里 measure 一次
+    panel.addEventListener('transitionend', (e) => {
+      if (e.target !== panel || e.propertyName !== 'width') return
+      this.clearSettle()
+      this.onLayout()
+    })
   }
 
-  private reduceMotion() {
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  get isOpen() {
+    return this.open
   }
 
   /**
-   * 抽屉右缘到编辑区左缘需要推开的距离。
-   * 用 margin 而不是 padding：岛自身跟着变窄，编辑区的边框和背景不会留出一条空洞。
+   * 逻辑宽度以 --drawer-w 为准。
+   * 外层宽度在动画中会变，offsetWidth 拿不到稳定值，拖拽/键盘微调会一路丢像素。
    */
-  private insetFor(width: number): number {
-    const host = this.editorEl.parentElement ?? document.body
-    const gap = Number.parseFloat(getComputedStyle(host).columnGap) || 0
-    const delta = this.editorEl.getBoundingClientRect().left - host.getBoundingClientRect().left
-    return Math.max(0, width - delta + gap)
+  get width() {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue('--drawer-w')
+    return Number.parseFloat(raw) || this.panel.offsetWidth
   }
 
-  private commitOpen() {
-    const w = this.panel.offsetWidth
-    this.editorEl.style.marginLeft = `${this.insetFor(w)}px`
-    this.onLayout()
+  private clearSettle() {
+    if (this.settleTimer) window.clearTimeout(this.settleTimer)
+    this.settleTimer = 0
   }
 
-  private commitClosed() {
-    this.editorEl.style.marginLeft = '0px'
-    this.onLayout()
+  /** 过渡没跑起来（系统关了动画、标签页在后台）时的兜底，保证 layout 一定发生 */
+  private scheduleLayout() {
+    this.clearSettle()
+    this.settleTimer = window.setTimeout(() => {
+      this.settleTimer = 0
+      this.onLayout()
+    }, 240)
+  }
+
+  private setOpen(next: boolean) {
+    if (this.open === next) return
+    this.open = next
+    this.panel.dataset.state = next ? 'open' : 'closed'
+    this.panel.setAttribute('aria-hidden', String(!next))
+    // 收起后宽度为 0，但里面的按钮仍能被 Tab 命中，inert 一并挡掉
+    this.panel.toggleAttribute('inert', !next)
+    this.scheduleLayout()
+    this.onChange(next)
   }
 
   async show() {
-    if (this.shown) return
-    this.shown = true
-    this.panel.setAttribute('aria-hidden', 'false')
-
-    if (this.reduceMotion()) {
-      this.panel.style.transform = 'translateX(0)'
-      this.commitOpen()
-      return
-    }
-
-    this.running?.cancel()
-    this.running = this.panel.animate(
-      [{ transform: 'translateX(calc(-100% - 12px))' }, { transform: 'translateX(0)' }],
-      { duration: 200, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' },
-    )
-    try {
-      await this.running.finished
-    } catch {
-      return
-    }
-    this.panel.style.transform = 'translateX(0)'
-    this.commitOpen()
+    this.setOpen(true)
   }
 
   async hide() {
-    if (!this.shown) return
-    this.shown = false
-    this.panel.setAttribute('aria-hidden', 'true')
-
-    if (this.reduceMotion()) {
-      this.commitClosed()
-      this.panel.style.transform = 'translateX(calc(-100% - 12px))'
-      return
-    }
-
-    // 先撤销占位（面板仍覆盖该区域），再滑出
-    this.commitClosed()
-
-    this.running?.cancel()
-    this.running = this.panel.animate(
-      [{ transform: 'translateX(0)' }, { transform: 'translateX(calc(-100% - 12px))' }],
-      { duration: 200, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' },
-    )
-    try {
-      await this.running.finished
-    } catch {
-      return
-    }
-    this.panel.style.transform = 'translateX(-100%)'
+    this.setOpen(false)
   }
 
   async toggle() {
-    if (this.shown) await this.hide()
-    else await this.show()
+    this.setOpen(!this.open)
+  }
+
+  /** 拖动调宽度：只改 --drawer-w；松手后由 settle 补一次重排 */
+  setWidth(px: number) {
+    document.documentElement.style.setProperty('--drawer-w', `${px}px`)
+  }
+
+  settle(px: number) {
+    this.setWidth(px)
+    if (this.open) this.onLayout()
   }
 }

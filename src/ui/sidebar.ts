@@ -1,6 +1,6 @@
 import { getLang, t } from '../i18n'
 import { formatBytes } from '../shell/largefile'
-import type { FileRecord, SnapshotRecord } from '../types'
+import type { FileNode, SnapshotRecord } from '../types'
 
 const DAY = 86_400_000
 
@@ -35,17 +35,24 @@ export interface FileListHandlers {
   remove(id: string): void
 }
 
+/** 一行列表所需的全部信息：元信息 + 只对当前文件有意义的会话态 */
+export interface FileListItem {
+  node: FileNode
+  dirty: boolean
+  readOnly: boolean
+}
+
 export function renderFileList(
   host: HTMLElement,
-  files: FileRecord[],
+  items: FileListItem[],
   currentId: string | null,
   filter: string,
   handlers: FileListHandlers,
 ) {
   host.innerHTML = ''
   const shown = filter
-    ? files.filter((f) => f.name.toLowerCase().includes(filter.toLowerCase()))
-    : files
+    ? items.filter((it) => it.node.name.toLowerCase().includes(filter.toLowerCase()))
+    : items
 
   if (shown.length === 0) {
     const empty = document.createElement('div')
@@ -56,7 +63,8 @@ export function renderFileList(
   }
 
   let lastGroup = ''
-  for (const file of shown) {
+  for (const it of shown) {
+    const file = it.node
     const group = groupOf(file.updatedAt)
     if (group !== lastGroup) {
       const g = document.createElement('div')
@@ -80,7 +88,7 @@ export function renderFileList(
     name.style.overflow = 'hidden'
     name.style.textOverflow = 'ellipsis'
     title.appendChild(name)
-    if (file.dirty) {
+    if (it.dirty) {
       const dot = document.createElement('span')
       dot.className = 'item-dot'
       title.appendChild(dot)
@@ -88,7 +96,7 @@ export function renderFileList(
 
     const sub = document.createElement('div')
     sub.className = 'list-sub'
-    sub.textContent = `${formatBytes(file.size)} · ${timeOf(file.updatedAt)}${file.readOnly ? ' · RO' : ''}`
+    sub.textContent = `${formatBytes(file.size)} · ${timeOf(file.updatedAt)}${it.readOnly ? ' · RO' : ''}`
 
     main.append(title, sub)
 
