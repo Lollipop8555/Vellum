@@ -214,6 +214,16 @@ export async function deleteContent(id: string): Promise<void> {
   })
 }
 
+/**
+ * 深度搜索的入口：只取键名，不碰 blob。
+ * 一次性 getAll() 会把整个库的正文读进内存，改成「先拿 id，再逐条 getContent」，
+ * 每份正文解完就能丢，调用方也能随时停下（用户换词或切走）。
+ */
+export async function listContentIds(): Promise<string[]> {
+  const keys = await readTx(['contents'], (s) => req<IDBValidKey[]>(s('contents').getAllKeys()))
+  return keys.map(String)
+}
+
 /* --------------------------------------------------------------- 物理删除 */
 
 /**

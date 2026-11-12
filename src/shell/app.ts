@@ -59,7 +59,12 @@ import { renderMarkdown } from '../ui/markdown'
 import { createFindBar, type FindBar } from '../ui/findbar'
 import * as sb from '../ui/statusbar'
 import { ENGINE_NAMES, engineIcon, engineMark } from '../ui/icons'
-import { renderSnapshotList } from '../ui/sidebar'
+import {
+  renderSearchResults,
+  renderSnapshotList,
+  type SearchContentHit,
+  type SearchEntry,
+} from '../ui/sidebar'
 import { renderTrashList, renderTree } from '../ui/tree'
 import {
   confirmDialog,
@@ -84,7 +89,7 @@ import type {
 export const el = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T
 
-type DrawerTab = 'files' | 'trash' | 'snapshots'
+type DrawerTab = 'files' | 'search' | 'trash' | 'snapshots'
 
 const EXPANDED_KEY = 'vellum.expanded'
 
@@ -350,8 +355,9 @@ function syncLeftPanel() {
   renderDrawerList()
 }
 
-const TAB_TITLES: Record<DrawerTab, 'rail.files' | 'rail.trash' | 'rail.snapshots'> = {
+const TAB_TITLES: Record<DrawerTab, 'rail.files' | 'rail.search' | 'rail.trash' | 'rail.snapshots'> = {
   files: 'rail.files',
+  search: 'rail.search',
   trash: 'rail.trash',
   snapshots: 'rail.snapshots',
 }
@@ -375,6 +381,13 @@ function switchDrawerTab(tab: DrawerTab) {
   if (changed) {
     state.renamingId = null
     clearSelection()
+  }
+  // 离开搜索页就把正在跑的扫描掐掉：结果没人看，别继续读盘；顺手收起设置弹层
+  if (tab !== 'search') {
+    cancelSearch()
+    el('searchOptions').hidden = true
+  } else {
+    el<HTMLInputElement>('searchInput').value = state.search
   }
   syncLeftPanel()
   if (!drawer.isOpen) void drawer.show()
@@ -406,7 +419,11 @@ function syncDrawerFoot() {
   el('railTrashCount').textContent = String(trashedCount)
   el('railFilesBtn').title = t('rail.filesTip', { n: liveCount })
   el('railTrashBtn').title = t('rail.trashTip', { n: trashedCount })
-  el('drawerSearch').hidden = state.drawerTab === 'snapshots'
+  // 搜索页有自己的输入框和列表，文件页的骨架（树、底部动作）整体让位
+  const isSearch = state.drawerTab === 'search'
+  el('searchPane').hidden = !isSearch
+  el('drawerList').hidden = isSearch
+  el('drawerFoot').hidden = isSearch
   // 空间条只属于文件页：回收站有自己的一行合计
   el('drawerStorage').hidden = !isFiles
 
@@ -414,20 +431,71 @@ function syncDrawerFoot() {
 }
 
 function wireDrawer() {
-  el<HTMLInputElement>('drawerSearch').addEventListener('input', (e) => {
-    state.search = (e.target as HTMLInputElement).value
-    // 搜索态下选择没有稳定语义，直接清掉
-    clearSelection()
-    renderDrawerList()
+  const input = el<HTMLInputElement>('searchInput')
+  const options = el('searchOptions')
+  const optBtn = el('searchOptionsBtn')
+
+  input.addEventListener('input', () => {
+    state.search = input.value
+    el('searchClear').hidden = state.search === ''
+    scheduleSearch()
   })
 
   // 清空搜索：只清搜索词，不动分区，也不动面板开合
-  el('drawerSearchClear').addEventListener('click', () => {
+  el('searchClear').addEventListener('click', () => {
     state.search = ''
-    el<HTMLInputElement>('drawerSearch').value = ''
-    el<HTMLInputElement>('drawerSearch').focus()
-    clearSelection()
-    renderDrawerList()
+    input.value = ''
+    el('searchClear').hidden = true
+    input.focus()
+    void runSearch()
+  })
+
+  // 手动触发：开了设置之后不再边打字边搜
+  el('searchGo').addEventListener('click', () => void runSearch())
+
+  // 大文件只在内容搜索下才有意义：勾它就连带勾上内容，撤内容也一起撤掉
+  el('searchDeep').addEventListener('change', (e) => {
+    deepSearch = (e.target as HTMLInputElement).checked
+    if (!deepSearch) bigSearch = false
+    void runSearch()
+  })
+
+  el('searchBig').addEventListener('change', (e) => {
+    bigSearch = (e.target as HTMLInputElement).checked
+    if (bigSearch) deepSearch = true
+    void runSearch()
+  })
+
+  // 设置弹层：点图标开合，点外面或按 Esc 收起
+  optBtn.addEventListener('click', () => {
+    options.hidden = !options.hidden
+    renderSearchPane()
+  })
+
+  document.addEventListener('pointerdown', (e) => {
+    if (options.hidden) return
+    const target = e.target as Node
+    if (options.contains(target) || optBtn.contains(target)) return
+    options.hidden = true
+    renderSearchPane()
+  })
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !options.hidden) {
+      options.hidden = true
+      renderSearchPane()
+      return
+    }
+    if (e.key !== 'Enter') return
+    // 手动模式下词改过：回车先跑搜索；结果就绪后再回车才是打开第一条
+    if (searchStale) {
+      void runSearch()
+      return
+    }
+    // 回车打开第一条结果：名字命中的从头打开，只有内容命中的落到第一处
+    const first = searchEntries.find((entry) => !entry.isFolder)
+    if (!first) return
+    void openRecord(first.id, first.nameHit ? undefined : first.hits[0]?.line)
   })
 
   el('newFileBtn').addEventListener('click', () => void createNode('file'))
@@ -442,15 +510,6 @@ function wireDrawer() {
   })
   el('restoreAllBtn').addEventListener('click', () => void restoreAllFromTrash())
   el('emptyTrashBtn').addEventListener('click', () => void emptyTrash())
-  el('drawerSearch').addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return
-    // 只有一个命中时回车直接打开，省一次点击
-    const hits = [...el('drawerList').querySelectorAll<HTMLElement>('.tree-row')]
-    if (hits.length === 1) {
-      const id = hits[0].dataset.id
-      if (id) void openRecord(id)
-    }
-  })
 }
 
 /* ------------------------------------------------------------ 顶栏与空状态 */
@@ -808,7 +867,8 @@ async function contentBlob(
   return new Blob([normalizeEol(text, node.eol)], { type: 'text/plain' })
 }
 
-async function openRecord(id: string) {
+/** line 只用于搜索命中跳转：打开后把光标带到那一行 */
+async function openRecord(id: string, line?: number) {
   const node = await store.getNode(id)
   if (!node || node.kind !== 'file' || node.deletedAt !== null) return
 
@@ -837,6 +897,7 @@ async function openRecord(id: string) {
 
   const text = rec.blob ? await rec.blob.text() : ''
   await mountEditor(text)
+  if (line && line > 0) state.editor?.goToLine(line)
 
   rememberTabFile(id)
   el('emptyState').hidden = true
@@ -1823,9 +1884,12 @@ async function refreshFiles() {
 }
 
 function renderDrawerList() {
+  if (state.drawerTab === 'search') {
+    renderSearchPane()
+    return
+  }
+
   const host = el('drawerList')
-  // 清空按钮跟着搜索词走：列表每次重渲染都会带上它，搜到半路也不会漏
-  el('drawerSearchClear').hidden = state.search === ''
 
   if (state.drawerTab === 'snapshots') {
     renderSnapshotList(host, state.snapshots, {
@@ -1858,7 +1922,8 @@ function renderDrawerList() {
     index: buildTree(state.files),
     currentId: state.current?.id ?? null,
     expanded: state.expanded,
-    filter: state.search,
+    // 搜索已经独立成页，文件树不再被搜索词过滤
+    filter: '',
     renamingId: state.renamingId,
     dirtyId: state.dirty && state.current ? state.current.id : null,
     selection: state.selection,
@@ -1917,8 +1982,7 @@ function selectNode(id: string, mode: 'toggle' | 'range'): void {
     else state.selection.add(id)
     state.anchor = id
   } else {
-    // 搜索时列表是平铺的，范围语义没有意义，退化成追加
-    const siblings = state.search.trim() ? [] : siblingIds(node)
+    const siblings = siblingIds(node)
     const from = state.anchor ? siblings.indexOf(state.anchor) : -1
     const to = siblings.indexOf(id)
     if (from < 0 || to < 0) {
@@ -2092,10 +2156,8 @@ async function createNode(
   kind: 'file' | 'folder',
   parentId: string | null = targetParent(),
 ): Promise<void> {
-  // 先把文件页、搜索词、选择归位：否则新节点可能被搜索过滤掉，或落在看不见的位置
+  // 回到文件页并把选择归位：新节点要能出现在列表里
   state.drawerTab = 'files'
-  state.search = ''
-  el<HTMLInputElement>('drawerSearch').value = ''
   state.renamingId = null
   clearSelection()
   syncLeftPanel()
@@ -2141,11 +2203,6 @@ async function createNode(
   if (parentId) {
     state.expanded.add(parentId)
     saveExpanded()
-  }
-  // 搜索态下新节点多半不命中搜索词，先清掉，否则「新建了却看不见」
-  if (state.search.trim()) {
-    state.search = ''
-    el<HTMLInputElement>('drawerSearch').value = ''
   }
   await refreshFiles()
 
@@ -2827,7 +2884,7 @@ function wireKeyboard() {
 
     // Cmd/Ctrl+A：抽屉里选中同层，编辑器里保持原生全选
     if (mod && !e.shiftKey && !e.altKey && key === 'a' && drawerHasKeys()) {
-      if (state.drawerTab === 'files' && state.search.trim() === '') {
+      if (state.drawerTab === 'files') {
         e.preventDefault()
         selectSiblings()
         return
@@ -2912,10 +2969,227 @@ function wireKeyboard() {
   })
 }
 
-function openQuickSwitch() {
+/* ---------------------------------------------------------------- 搜索 */
+
+const SEARCH_NAME_LIMIT = 80
+const SEARCH_ENTRY_LIMIT = 60
+const SEARCH_HITS_PER_FILE = 5
+/** 单次深搜的内容预算；超了就停，界面会说明只显示了一部分 */
+const SEARCH_SCAN_BUDGET = 48 * 1024 * 1024
+/** 一个字符的内容搜索命中太多，先让用户再打一个字 */
+const SEARCH_MIN_DEEP = 2
+
+let deepSearch = false
+/** 允许扫超过 LIMITS.light 的文件；只有内容搜索才谈得上大小 */
+let bigSearch = false
+let searchSeq = 0
+let searchTimer = 0
+let searchScanning = false
+let searchTruncated = false
+let searchSkipped = 0
+/** 手动模式：词或开关改过但还没跑，结果区先别拿上一轮的结果糊弄人 */
+let searchStale = false
+/** 一个文件一条：文件名命中的先排好，内容命中则往同一条里补片段 */
+let searchEntries: SearchEntry[] = []
+/** 扫描时按 id 找回已有的那条，避免同一个文件冒出两条 */
+let searchIndex = new Map<string, SearchEntry>()
+let searchScanned = 0
+let searchTotal = 0
+
+/** 换词或离开搜索页：让正在跑的扫描在下一圈自己停 */
+function cancelSearch() {
+  searchSeq += 1
+  searchScanning = false
+}
+
+/** 任一项打开就切成手动触发：扫全库要几秒，边打字边扫连输入都会被拖住 */
+function manualSearch(): boolean {
+  return deepSearch || bigSearch
+}
+
+function scheduleSearch() {
+  window.clearTimeout(searchTimer)
+  if (manualSearch()) {
+    cancelSearch()
+    searchStale = true
+    renderSearchPane()
+    return
+  }
+  searchTimer = window.setTimeout(() => void runSearch(), 200)
+}
+
+function renderSearchPane() {
+  const options = el('searchOptions')
+  const optBtn = el('searchOptionsBtn')
+  el('searchClear').hidden = state.search === ''
+  el<HTMLInputElement>('searchDeep').checked = deepSearch
+  el<HTMLInputElement>('searchBig').checked = bigSearch
+  // 放大镜按钮只在开了设置时出现；词改过就点亮，提示该按了
+  el('searchGo').hidden = !manualSearch()
+  el('searchGo').classList.toggle('is-ready', searchStale)
+  optBtn.classList.toggle('is-on', manualSearch() || !options.hidden)
+  optBtn.setAttribute('aria-expanded', String(!options.hidden))
+  renderSearchResults(
+    el('searchResults'),
+    {
+      query: state.search.trim(),
+      deep: deepSearch,
+      stale: searchStale,
+      scanning: searchScanning,
+      scanned: searchScanned,
+      total: searchTotal,
+      truncated: searchTruncated,
+      skipped: searchSkipped,
+      entries: searchStale ? [] : searchEntries,
+    },
+    { open: (id, line) => void openRecord(id, line), reveal: revealSearchHit },
+  )
+}
+
+async function runSearch() {
+  const seq = (searchSeq += 1)
+  window.clearTimeout(searchTimer)
+  searchStale = false
+  const query = state.search.trim()
+  const index = buildTree(state.files)
+  const lower = query.toLowerCase()
+
+  // 文件名命中先按名字排好；内容命中的文件扫描时再往同一条里补片段
+  searchEntries = query
+    ? state.files
+        .filter((n) => n.deletedAt === null && n.name.toLowerCase().includes(lower))
+        .sort((a, b) => a.name.localeCompare(b.name, getLang()))
+        .slice(0, SEARCH_NAME_LIMIT)
+        .map((n) => ({
+          id: n.id,
+          name: n.name,
+          path: nodePath(index, n.id),
+          isFolder: n.kind === 'folder',
+          nameHit: true,
+          hits: [] as SearchContentHit[],
+          more: 0,
+        }))
+    : []
+  searchIndex = new Map(searchEntries.map((entry) => [entry.id, entry]))
+  searchTruncated = false
+  searchSkipped = 0
+  searchScanning = false
+  searchScanned = 0
+  searchTotal = 0
+  renderSearchPane()
+
+  if (!deepSearch || query.length < SEARCH_MIN_DEEP) return
+  searchScanning = true
+  renderSearchPane()
+  await scanContents(query, seq, index)
+  if (seq !== searchSeq) return
+  searchScanning = false
+  renderSearchPane()
+}
+
+/**
+ * 深度搜索：逐个内容记录读文本、按行匹配。
+ * 三条硬边界——单文件超过轻量线上限跳过、总扫描量有预算、每个文件只列前几处；
+ * 否则一次误搜就把整个库读一遍，抽屉还要渲染上千行。
+ */
+async function scanContents(query: string, seq: number, index: ReturnType<typeof buildTree>) {
+  const lower = query.toLowerCase()
+  const nodes = new Map(state.files.map((n) => [n.id, n]))
+  const ids = await store.listContentIds()
+  if (seq !== searchSeq) return
+
+  searchTotal = ids.length
+  // 先把手上有多少条告诉界面，进度才有个分母
+  renderSearchPane()
+  let budget = SEARCH_SCAN_BUDGET
+  let drawn = 0
+  let painted = 0
+
+  for (const id of ids) {
+    if (seq !== searchSeq) return
+    searchScanned += 1
+
+    const node = nodes.get(id)
+    if (!node || node.kind !== 'file' || node.deletedAt !== null) continue
+    // 大文件默认跳过：2MB 以上的正文读进来就是几十万行，开了设置才扫
+    if (!bigSearch && node.size > LIMITS.light) {
+      searchSkipped += 1
+      continue
+    }
+    if (budget <= 0) {
+      searchTruncated = true
+      break
+    }
+
+    const content = await store.getContent(id)
+    const blob = content ? await contentBlob(node, content) : null
+    // 读盘期间用户可能已经换了词，别把上一轮的结果写进新列表
+    if (seq !== searchSeq) return
+    if (!blob) continue
+    budget -= node.size
+
+    const hits: SearchContentHit[] = []
+    let more = 0
+    const lines = (await blob.text()).split('\n')
+    if (seq !== searchSeq) return
+    for (let i = 0; i < lines.length; i += 1) {
+      if (!lines[i].toLowerCase().includes(lower)) continue
+      if (hits.length < SEARCH_HITS_PER_FILE) hits.push({ line: i + 1, text: lines[i] })
+      else more += 1
+    }
+    if (!hits.length && !more) continue
+
+    // 名字已经命中的文件不再新开一条：片段挂到它下面
+    const known = searchIndex.get(id)
+    if (known) {
+      known.hits = hits
+      known.more = more
+    } else if (searchEntries.length < SEARCH_ENTRY_LIMIT) {
+      const entry: SearchEntry = {
+        id,
+        name: node.name,
+        path: nodePath(index, id),
+        isFolder: false,
+        nameHit: false,
+        hits,
+        more,
+      }
+      searchIndex.set(id, entry)
+      searchEntries.push(entry)
+    } else {
+      searchTruncated = true
+      break
+    }
+    drawn += 1
+
+    // 边扫边画：大库要几秒，白屏等着很难受。每三个命中刷一次；
+    // 一直没有命中时进度数字也别僵着，扫过 20 条也刷一次
+    if (drawn % 3 === 0 || searchScanned - painted >= 20) {
+      painted = searchScanned
+      renderSearchPane()
+    }
+  }
+}
+
+/** 命中的是文件夹：切回文件页、展开祖先再定位 —— 搜索页里没有树可展开 */
+function revealSearchHit(id: string) {
   switchDrawerTab('files')
+  let parent = state.files.find((n) => n.id === id)?.parentId ?? null
+  while (parent) {
+    state.expanded.add(parent)
+    parent = state.files.find((n) => n.id === parent)?.parentId ?? null
+  }
+  saveExpanded()
+  renderDrawerList()
+  revealNode(id)
+}
+
+/** Cmd/Ctrl+P：直接落到搜索页并聚焦输入框，比在文件树里翻快得多 */
+function openQuickSwitch() {
+  switchDrawerTab('search')
+  el('searchOptions').hidden = true
   void drawer.show().then(() => {
-    const input = el<HTMLInputElement>('drawerSearch')
+    const input = el<HTMLInputElement>('searchInput')
     input.focus()
     input.select()
   })
