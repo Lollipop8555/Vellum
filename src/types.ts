@@ -68,11 +68,16 @@ export interface ContentRecord {
   blob?: Blob
   /** 原始字节，供「以其他编码重新解码」与逐字节保真导出 */
   originalBytes?: Blob
+  /**
+   * 这份内容只是自动写入的草稿，还没按保存键提交成版本。
+   * 有了它，刷新/换标签页后状态栏才敢说「未保存 · 草稿」而不是「已保存」。
+   */
+  draft?: boolean
 }
 
 /**
  * 运行时打开视图：节点元信息 + 内容 + 会话态。
- * blob/dirty/readOnly 都是会话态，永远不落库。
+ * blob/dirty/readOnly 都是会话态，不落节点；dirty 由内容记录上的 draft 标记还原。
  */
 export interface OpenFile extends FileNode {
   blob: Blob | null

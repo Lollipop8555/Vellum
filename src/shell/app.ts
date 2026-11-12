@@ -160,6 +160,8 @@ let drawer: Drawer
 let findBar: FindBar
 let autosaveTimer = 0
 let previewTimer = 0
+/** 未保存改动最后一次写进草稿的时间；null = 还没写过（防抖窗口里，或这文件根本不写草稿） */
+let draftAt: number | null = null
 
 /* ------------------------------------------------------------------ 启动 */
 
@@ -228,6 +230,7 @@ export async function startApp() {
     // 标题是动态拼的分区名，静态文本应用不到，得单独刷一次
     syncLeftPanel()
     refreshMeta()
+    updateDirtyDot()
     renderPreviewNow()
     findBar?.relabel()
   })
@@ -617,6 +620,19 @@ function syncSizeBadge() {
   sb.setSize(encodeUtf8(text).byteLength)
 }
 
+/**
+ * 编码格：库内一律 UTF-8，但导入时按什么解码是这文件的一段历史。
+ * 源编码在第一次内容变更后就会被丢掉（D-16 单副本），所以这里每次都重新读节点。
+ */
+function syncEncodingBadge() {
+  const rec = state.current
+  if (!rec) {
+    sb.setEncoding('utf-8')
+    return
+  }
+  sb.setEncoding(rec.encoding, rec.sourceEncoding ?? null)
+}
+
 /* ---------------------------------------------------------------- 导入 */
 
 async function importFile() {
@@ -820,6 +836,7 @@ function closeCurrent() {
   state.current = null
   state.text = ''
   state.dirty = false
+  draftAt = null
   state.locked = false
   state.snapshots = []
   lock.release()
@@ -897,6 +914,8 @@ async function mountEditor(text: string, offset = 0) {
     onChange: (v) => {
       state.text = v
       state.dirty = true
+      // 这一版内容还没进草稿，状态栏先别急着说「草稿已存」
+      draftAt = null
       updateDirtyDot()
       sb.setCount(v)
       syncSizeBadge()
@@ -913,10 +932,12 @@ async function mountEditor(text: string, offset = 0) {
   state.editor = adapter
   state.text = text
   state.dirty = rec.dirty
+  // dirty 是从内容记录的 draft 标记还原的，草稿写入时间就是内容更新时间
+  draftAt = rec.dirty ? rec.updatedAt : null
   if (offset) adapter.setOffset(offset)
 
   sb.setCount(text)
-  sb.setEncoding(ENCODING_LABELS[rec.encoding])
+  syncEncodingBadge()
   sb.setEol(rec.eol)
   // 语言是文件本身的属性，只读大文件只是不解析，状态栏仍显示识别结果
   sb.setLanguage(LANG_LABELS[langOf(rec)])
@@ -970,6 +991,7 @@ function refreshMeta() {
   syncPreviewButton()
   syncDocActions()
   syncSizeBadge()
+  syncEncodingBadge()
   if (!rec) {
     sb.setLanguage('—')
     return
@@ -991,19 +1013,40 @@ function syncDocActions() {
   })
 }
 
-/** 状态栏只读徽标：大文件默认锁着防手滑，但永远允许点开强制编辑 */
+/**
+ * 状态栏只读徽标：大文件默认锁着防手滑，但永远允许点开强制编辑。
+ * 三种成因行为不同（他页占用只能等、大文件点了就是解锁、手动锁是开关），
+ * 徽标上要分别说清楚，否则同一个「只读」点了有时有效有时只弹报错。
+ */
 function syncReadonlyBadge() {
   const rec = state.current
+  // 优先级按点击行为排：他页占用谈不上解锁，大文件点了永远是「解锁」
+  const reason = state.locked ? 'locked' : state.mode === 'readonly' ? 'big' : 'manual'
   sb.setReadonly(
     Boolean(rec?.readOnly),
     Boolean(rec) && state.mode === 'readonly',
     Boolean(rec) && !state.locked,
+    reason,
   )
 }
 
 function updateDirtyDot() {
+  const rec = state.current
   el('dirtyDot').hidden = !state.dirty
-  sb.setSaved(!state.current ? 'idle' : state.dirty ? 'unsaved' : 'saved')
+  if (!rec) {
+    sb.setSaved('idle')
+    return
+  }
+  if (!state.dirty) {
+    sb.setSaved('saved')
+    return
+  }
+  // 大文件（>LIMITS.autosave）和只读文件不写草稿，改了就只在内存里
+  if (rec.readOnly || rec.size > LIMITS.autosave) {
+    sb.setSaved('nodraft')
+    return
+  }
+  sb.setSaved(draftAt === null ? 'unsaved' : 'draft', draftAt ?? undefined)
 }
 
 function updateFormatButton() {
@@ -1041,9 +1084,16 @@ async function persistDraft() {
   // 首次内容变更即丢弃原始字节，单副本生命周期（D-16）
   delete rec.sourceEncoding
 
-  await store.putContent({ id: rec.id, blob })
+  // draft 标记跟着内容走：刷新后 toOpen 才敢把「未保存」原样还回来
+  await store.putContent({ id: rec.id, blob, draft: true })
   await store.putNode(node)
   await refreshFiles()
+
+  // 写的过程中切走了文件就别动状态栏，那是另一个文件的事
+  if (state.current?.id !== rec.id) return
+  draftAt = node.updatedAt
+  updateDirtyDot()
+  syncEncodingBadge()
 }
 
 /* ------------------------------------------------------------ 保存 */
@@ -1062,6 +1112,7 @@ async function saveFile() {
 
   try {
     const node = bumpContent(toNode(rec), size)
+    // 整条覆盖写，顺带把 draft 标记清掉：这份内容现在是版本，不是草稿
     await store.putContent({ id: rec.id, blob })
     await store.putNode(node)
     await store.addSnapshot(rec.id, blob, 'save')
@@ -1073,6 +1124,7 @@ async function saveFile() {
     delete rec.sourceEncoding
 
     state.dirty = false
+    draftAt = null
     updateDirtyDot()
     refreshMeta()
     await refreshFiles()
@@ -1332,6 +1384,8 @@ function toggleReadonly() {
 
   // 大文件只读只是「防手滑」：解锁是本次会话的选择，不落库，重开仍按体积判定
   if (state.mode === 'readonly') {
+    // 已经解开了就别再弹一句假的「已解除只读」
+    if (!rec.readOnly) return
     rec.readOnly = false
     state.editor?.setReadOnly(false)
     refreshMeta()
@@ -1552,7 +1606,7 @@ async function reDecode(enc: keyof typeof ENCODING_LABELS) {
   state.text = text
   state.dirty = true
   updateDirtyDot()
-  sb.setEncoding(ENCODING_LABELS[rec.encoding])
+  syncEncodingBadge()
   sb.setEol(eol)
   sb.setCount(text)
   schedulePreview()

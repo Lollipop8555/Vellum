@@ -1135,6 +1135,11 @@ body.is-resizing {
   .seg-label {
     display: none;
   }
+
+  /* 「未保存 · 草稿 14:32」在窄窗口只留结论，原因和时间退到 tooltip */
+  .st-extra {
+    display: none;
+  }
 }
 
 .st.clickable {
@@ -1157,6 +1162,16 @@ body.is-resizing {
 /* 未保存时给一点重量，已保存就安静地待着 */
 .st.is-dirty {
   color: var(--c-accent);
+}
+
+/* 「无草稿」是大文件唯一真的会丢改动的状态，用警告色和普通未保存分开 */
+.st.is-warn {
+  color: var(--c-warn);
+}
+
+/* 保存状态/只读徽标的后半句（草稿时间、只读成因）：压暗一档，窄窗口整段收掉 */
+.st-extra {
+  opacity: 0.78;
 }
 
 /* 引擎指示：图标 + 名字，窄窗口由下面的媒体查询只留图标 */

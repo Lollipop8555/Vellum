@@ -113,7 +113,8 @@ export function toOpen(
   return {
     ...node,
     blob: content?.blob ?? null,
-    dirty: false,
+    // 内容记录上带着 draft 标记：上次是自动存的草稿，不是按下保存的版本
+    dirty: content?.draft === true,
     readOnly,
   }
 }

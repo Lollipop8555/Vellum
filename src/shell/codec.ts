@@ -10,6 +10,17 @@ export const ENCODING_LABELS: Record<EncodingId, string> = {
   'windows-1252': 'Windows-1252',
 }
 
+/** 状态栏里的短名：「GB18030 / GBK → UTF-8」整串塞不下，完整名留在 tooltip 里 */
+export const ENCODING_SHORT: Record<EncodingId, string> = {
+  'utf-8': 'UTF-8',
+  'utf-16le': 'UTF-16LE',
+  'utf-16be': 'UTF-16BE',
+  gb18030: 'GBK',
+  big5: 'Big5',
+  shift_jis: 'SJIS',
+  'windows-1252': 'CP1252',
+}
+
 /** 解码顺序：BOM → UTF-8 严格试探 → GB18030 兜底 */
 const ORDER: EncodingId[] = ['utf-8', 'gb18030']
 
