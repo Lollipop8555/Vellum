@@ -1,7 +1,16 @@
 import { applyStaticText, getLang, initLang, onLangChange, setLang, t } from '../i18n'
 import { CodeMirrorAdapter } from '../editors/codemirror'
 import type { EditorAdapter } from '../editors/adapter'
-import { ALL_LANGS, LANG_LABELS, detectLang, langFromName, type LangId } from '../editors/languages'
+import {
+  ALL_LANGS,
+  LANG_LABELS,
+  cmSupports,
+  detectLang,
+  langFromName,
+  langKeywords,
+  monoSupports,
+  type LangId,
+} from '../editors/languages'
 import * as store from './store'
 import {
   ENCODING_LABELS,
@@ -25,6 +34,7 @@ import { toast } from '../ui/toast'
 import { renderMarkdown } from '../ui/markdown'
 import { createFindBar, type FindBar } from '../ui/findbar'
 import * as sb from '../ui/statusbar'
+import { ENGINE_NAMES, engineIcon, engineMark } from '../ui/icons'
 import { renderFileList, renderSnapshotList } from '../ui/sidebar'
 import {
   confirmDialog,
@@ -175,8 +185,16 @@ function wireTopbar() {
 function updateEngineSeg() {
   el('engineSeg')
     .querySelectorAll<HTMLElement>('[data-engine]')
-    .forEach((b) => b.classList.toggle('is-active', b.dataset.engine === state.engineId))
-  sb.setEngineLabel(state.engineId === 'monaco' ? 'Monaco' : 'CodeMirror')
+    .forEach((b) => {
+      const id = b.dataset.engine as EngineId
+      // 图标 + 名字一次画好；窄窗口由 CSS 收掉名字，只留图标
+      if (!b.innerHTML) {
+        b.innerHTML = `${engineIcon(id)}<span class="seg-label">${ENGINE_NAMES[id]}</span>`
+      }
+      b.title = ENGINE_NAMES[id]
+      b.classList.toggle('is-active', id === state.engineId)
+    })
+  sb.setEngine(state.engineId)
 }
 
 /* ---------------------------------------------------------------- 竖条 */
@@ -351,9 +369,16 @@ function wireStatusbar() {
   el('stLang').addEventListener('click', () => pickLanguage())
   el('stReadonly').addEventListener('click', () => toggleReadonly())
   el('stHighlight').addEventListener('click', () => {
+    if (!state.current) return
+    const lang = currentLang()
     // 纯文本没有语法可切，点徽标直接去选语言，比点了没反应强
-    if (state.current && currentLang() === 'text') {
+    if (lang === 'text') {
       pickLanguage()
+      return
+    }
+    // 当前引擎没这门语言的语法：徽标上挂的是能着色的那一侧，点一下问一句就切过去
+    if (!engineHas(lang)) {
+      void offerEngineSwitch(lang)
       return
     }
     void toggleHighlight()
@@ -675,10 +700,21 @@ function refreshMeta() {
   el('brand').title = rec ? `${rec.name} · ${formatBytes(rec.size)}` : 'Vellum'
   document.title = rec ? `${rec.name} — Vellum` : 'Vellum'
   // 高亮开关只在大文件（或已经手动关掉）时占用状态栏，小文件默认全开不必提示。
-  // 纯文本没有语法可挂，徽标要说「无语法」而不是跟着开关假装在着色
-  const plain = !rec || langOf(rec, state.text) === 'text'
+  // 纯文本没有语法可挂，徽标要说「无语法」而不是跟着开关假装在着色；
+  // 当前引擎没收录这个语言时也一样，否则用户会以为颜色只是没刷出来
+  const lang = rec ? langOf(rec, state.text) : 'text'
+  const engineMissing =
+    Boolean(rec) && lang !== 'text' && state.editor ? !state.editor.supportsLanguage(lang) : false
+  const plain = !rec || lang === 'text' || engineMissing
   const hl = !state.highlight ? 'off' : plain ? 'na' : 'on'
-  sb.setHighlight(hl, Boolean(rec) && (state.mode !== 'full' || !state.highlight))
+  // 徽标上挂对方引擎的图标：一眼看出「不是没得救，是引擎不对」
+  // 「无语法」必须一直露面，哪怕文件不大、开关是开着的：那不是「一切正常」，是这门语言在这侧没语法
+  sb.setHighlight(
+    hl,
+    Boolean(rec) && (engineMissing || state.mode !== 'full' || !state.highlight),
+    // 只有「无语法」才有换引擎这回事；开关被关掉时不该挂图标
+    hl === 'na' ? altEngine(lang) : null,
+  )
   syncReadonlyBadge()
   syncPreviewButton()
   syncDocActions()
@@ -799,11 +835,48 @@ async function saveFile() {
 
 /* ------------------------------------------------------------ 引擎切换 */
 
+/** 当前引擎能不能给这门语言上色 */
+function engineHas(lang: LangId): boolean {
+  return state.engineId === 'monaco' ? monoSupports(lang) : cmSupports(lang)
+}
+
+/** 只有一侧引擎有语法时返回那一侧；两侧都有（或都没有）返回 null */
+function onlyEngineOf(lang: LangId): EngineId | null {
+  const cm = cmSupports(lang)
+  const mono = monoSupports(lang)
+  return cm === mono ? null : cm ? 'cm' : 'monaco'
+}
+
+/** 换到另一侧就能着色时返回那个引擎，否则 null（两边都没有的真没有） */
+function altEngine(lang: LangId): EngineId | null {
+  const other: EngineId = state.engineId === 'monaco' ? 'cm' : 'monaco'
+  const ok = other === 'monaco' ? monoSupports(lang) : cmSupports(lang)
+  return ok ? other : null
+}
+
+/**
+ * 当前引擎没有这个语言的语法、另一侧有时，问一句要不要换过去。
+ * 两个引擎是并集菜单：能看见的语言就一定有着色的办法，代价只是换引擎。
+ * 返回 true 表示已经换好了。
+ */
+async function offerEngineSwitch(lang: LangId): Promise<boolean> {
+  const other = altEngine(lang)
+  if (!other) return false
+  const res = await confirmDialog(
+    `${LANG_LABELS[lang]} · ${ENGINE_NAMES[other]}`,
+    t('confirm.switchEngine', { lang: LANG_LABELS[lang], engine: ENGINE_NAMES[other] }),
+  )
+  if (!res.ok) return false
+  await switchEngine(other)
+  toast(t('toast.engineSwitched', { engine: ENGINE_NAMES[other] }))
+  return true
+}
+
 async function switchEngine(id: EngineId) {
   if (id === state.engineId) return
   if (state.current && state.mode !== 'full') {
     const res = await confirmDialog(
-      `${id === 'monaco' ? 'Monaco' : 'CodeMirror'} · ${formatBytes(state.current.size)}`,
+      `${ENGINE_NAMES[id]} · ${formatBytes(state.current.size)}`,
       t('confirm.bigEngine'),
     )
     if (!res.ok) return
@@ -823,6 +896,8 @@ async function switchEngine(id: EngineId) {
   host.style.opacity = '0.35'
   await mountEditor(value, offset)
   host.style.opacity = '1'
+  // 空白页没有文件记录，mountEditor 会提前返回，分段控件得自己刷一次
+  updateEngineSeg()
   if (state.current) refreshMeta()
 }
 
@@ -923,25 +998,98 @@ function pickLanguage() {
 
   const current = langOf(rec, state.text)
   const wrap = document.createElement('div')
-  wrap.className = 'toolbar-row'
+  wrap.className = 'lang-picker'
 
-  const item = (label: string, active: boolean, run: () => void) => {
-    const b = document.createElement('button')
-    b.className = `btn${active ? ' btn-primary' : ''}`
-    b.textContent = label
-    b.onclick = () => {
-      dlg.close()
-      run()
+  const search = document.createElement('input')
+  search.type = 'search'
+  search.className = 'lang-search'
+  search.placeholder = t('lang.search')
+  wrap.appendChild(search)
+
+  const auto = document.createElement('button')
+  auto.className = `btn lang-auto${!rec.langManual ? ' btn-primary' : ''}`
+  auto.textContent = t('lang.auto')
+  auto.onclick = () => {
+    dlg.close()
+    void applyLanguage(null)
+  }
+  wrap.appendChild(auto)
+
+  // 菜单是两个引擎的并集：先说清当前是哪一侧、能着色多少种，
+  // 再解释后缀标记的含义，否则带标记的条目会让人以为是灰色不可用
+  const here = state.engineId === 'monaco' ? monoSupports : cmSupports
+  const note = document.createElement('div')
+  note.className = 'lang-note'
+  note.innerHTML = `${engineIcon(state.engineId)}<span>${t('lang.engineNote', {
+    engine: ENGINE_NAMES[state.engineId],
+    n: ALL_LANGS.filter((id) => here(id)).length,
+  })}</span>`
+  wrap.appendChild(note)
+
+  const grid = document.createElement('div')
+  grid.className = 'lang-grid'
+  wrap.appendChild(grid)
+
+  const empty = document.createElement('div')
+  empty.className = 'lang-empty'
+  empty.textContent = t('lang.noMatch')
+  empty.hidden = true
+  wrap.appendChild(empty)
+
+  const dlg = openDialog({ title: t('dialog.language'), body: wrap, wide: true })
+
+  // 选一个当前引擎上不了色的语言，先问一句要不要换引擎，点「确定」就连引擎带语言一起换
+  const choose = async (id: LangId) => {
+    if (id === 'text' || engineHas(id)) {
+      await applyLanguage(id)
+      return
     }
-    wrap.appendChild(b)
+    if (await offerEngineSwitch(id)) await applyLanguage(id)
   }
 
-  item(t('lang.auto'), !rec.langManual, () => void applyLanguage(null))
+  const item = (id: LangId, active: boolean) => {
+    const b = document.createElement('button')
+    b.className = `btn lang-item${active ? ' btn-primary' : ''}`
+    b.dataset.kw = langKeywords(id)
+
+    const name = document.createElement('span')
+    name.className = 'lang-name'
+    name.textContent = LANG_LABELS[id]
+    b.appendChild(name)
+
+    // 只有一侧引擎有语法时才挂标记；两侧都有就不必占用视线
+    const only = onlyEngineOf(id)
+    if (only) {
+      b.insertAdjacentHTML(
+        'beforeend',
+        engineMark(only, t('lang.onlyEngine', { engine: ENGINE_NAMES[only] })),
+      )
+    }
+
+    b.onclick = () => {
+      dlg.close()
+      void choose(id)
+    }
+    grid.appendChild(b)
+  }
+
+  item('text', current === 'text')
   ALL_LANGS.forEach((id) => {
-    item(LANG_LABELS[id], !!rec.langManual && current === id, () => void applyLanguage(id))
+    if (id !== 'text') item(id, !!rec.langManual && current === id)
   })
 
-  const dlg = openDialog({ title: t('dialog.language'), body: wrap, narrow: true })
+  // 一百多个语言，靠滚动找太慢，边打边筛
+  search.oninput = () => {
+    const q = search.value.trim().toLowerCase()
+    let shown = 0
+    for (const b of grid.querySelectorAll('button')) {
+      const hit = !q || (b.dataset.kw ?? '').includes(q)
+      b.hidden = !hit
+      if (hit) shown += 1
+    }
+    empty.hidden = shown > 0 || !q
+  }
+  search.focus()
 }
 
 /** next 为 null 表示回到自动（按扩展名 + 内容嗅探） */
@@ -1207,7 +1355,7 @@ function showStats() {
     ['', ENCODING_LABELS[rec.encoding]],
     ['', rec.eol.toUpperCase()],
     ['', LANG_LABELS[langOf(rec, text)]],
-    ['', state.engineId === 'monaco' ? 'Monaco' : 'CodeMirror'],
+    ['', ENGINE_NAMES[state.engineId]],
     ['', new Date(rec.createdAt).toLocaleString()],
     ['', new Date(rec.updatedAt).toLocaleString()],
   ]

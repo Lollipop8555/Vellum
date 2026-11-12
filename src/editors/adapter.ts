@@ -39,6 +39,8 @@ export interface EditorAdapter {
   getOffset(): number
   setOffset(n: number): void
   setLanguage(id: LangId): void
+  /** 该引擎有没有这个语言的语法定义，没有时状态栏说实话而不是假装在着色 */
+  supportsLanguage(id: LangId): boolean
   setReadOnly(v: boolean): void
   setWordWrap(v: boolean): void
   setFontSize(px: number): void

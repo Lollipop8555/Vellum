@@ -3,7 +3,7 @@ import 'monaco-editor/esm/vs/editor/editor.all.js'
 import 'monaco-editor/esm/vs/basic-languages/monaco.contribution'
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import type { EditorAdapter, EditorOptions, SearchApi } from './adapter'
-import { monacoLanguage, scanLogcatLine, type LangId } from './languages'
+import { monacoLanguage, monoSupports, scanLogcatLine, type LangId } from './languages'
 import { cssVar } from '../ui/theme'
 
 // 只提供 editor worker；TS/JSON 语言服务不参与打包，避免 worker 协议错配
@@ -54,6 +54,45 @@ function registerLogcat() {
   })
 }
 
+let jsonReady = false
+
+/**
+ * Monaco 把 JSON 放在 language service（`vs/language/json`）里，basic-languages 没有它：
+ * 只引 basic-languages 时 `json` 这个 id 压根没注册，状态栏说「高亮」其实一片素色。
+ * 这里补一个纯 Monarch 的 JSON/JSONC，不拉 json worker：只上色，不校验、不补全。
+ */
+function registerJson() {
+  if (jsonReady) return
+  jsonReady = true
+
+  monaco.languages.register({
+    id: 'json',
+    extensions: ['.json', '.jsonc', '.json5', '.har', '.webmanifest'],
+    aliases: ['JSON', 'json'],
+    mimetypes: ['application/json'],
+  })
+  monaco.languages.setMonarchTokensProvider('json', {
+    tokenizer: {
+      root: [
+        [/\s+/, ''],
+        [/\/\*/, 'comment', '@comment'],
+        [/\/\/[^\n]*/, 'comment'],
+        // 键：字符串后面紧跟冒号。两个捕获组依次上色，冒号仍算分隔符
+        [/("(?:[^"\\]|\\.)*")([ \t]*:)/, ['string.key', 'delimiter']],
+        [/"(?:[^"\\]|\\.)*"/, 'string'],
+        [/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/, 'number'],
+        [/\b(?:true|false|null)\b/, 'keyword'],
+        [/[{}[\],:]/, 'delimiter'],
+      ],
+      comment: [
+        [/[^*/]+/, 'comment'],
+        [/\*\//, 'comment', '@pop'],
+        [/[*/]/, 'comment'],
+      ],
+    },
+  })
+}
+
 function defineThemes() {
   const logcatRules = [
     { token: 'logcat.time', foreground: hex('--c-dim') },
@@ -75,6 +114,7 @@ function defineThemes() {
     rules: [
       { token: 'keyword', foreground: hex('--syn-key') },
       { token: 'string', foreground: hex('--syn-str') },
+      { token: 'string.key', foreground: hex('--syn-prop') },
       { token: 'comment', foreground: hex('--syn-com'), fontStyle: 'italic' },
       { token: 'number', foreground: hex('--syn-num') },
       { token: 'type', foreground: hex('--syn-type') },
@@ -111,6 +151,7 @@ function defineThemes() {
     rules: [
       { token: 'keyword', foreground: hex('--syn-key') },
       { token: 'string', foreground: hex('--syn-str') },
+      { token: 'string.key', foreground: hex('--syn-prop') },
       { token: 'comment', foreground: hex('--syn-com'), fontStyle: 'italic' },
       { token: 'number', foreground: hex('--syn-num') },
       { token: 'type', foreground: hex('--syn-type') },
@@ -158,6 +199,7 @@ export class MonacoAdapter implements EditorAdapter {
     }
     // 必须在 createModel 之前注册，否则语言 id 还没被 Monaco 认识
     registerLogcat()
+    registerJson()
 
     // Monaco 在建模那一刻就定死「这个模型要不要分词」：开着大文件优化时，
     // 超过 20MB 的文档永远不会上色。大文件要颜色就只能把优化关掉，
@@ -240,6 +282,10 @@ export class MonacoAdapter implements EditorAdapter {
   setLanguage(id: LangId): void {
     if (!this.model) return
     monaco.editor.setModelLanguage(this.model, monacoLanguage(id))
+  }
+
+  supportsLanguage(id: LangId): boolean {
+    return monoSupports(id)
   }
 
   setReadOnly(v: boolean): void {

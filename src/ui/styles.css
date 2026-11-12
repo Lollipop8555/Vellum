@@ -225,6 +225,29 @@ select {
   padding: 0;
 }
 
+/* ---------- 引擎标记 ---------- */
+
+/* 图标固定 13px；描边/填充跟随所在容器，只有 Monaco 那枚自带品牌蓝 */
+svg.eng-ico {
+  width: 13px;
+  height: 13px;
+  display: block;
+  flex: none;
+}
+
+/* 「只有这一侧引擎有语法」的小记号，挂在语言条目右侧 */
+.eng-mark {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  opacity: 0.45;
+  transition: opacity 0.12s;
+}
+
+.lang-grid .btn:hover .eng-mark {
+  opacity: 1;
+}
+
 /* more 菜单里的设置行（字号、强调色） */
 .menu-divider {
   height: 1px;
@@ -328,6 +351,9 @@ select {
   color: var(--c-dim);
   font-size: 12px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .seg-item.is-active {
@@ -876,6 +902,12 @@ body.is-resizing {
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* 引擎名字收进 tooltip，只留图标；图标已经能分清了 */
+  .st-engine-name,
+  .seg-label {
+    display: none;
+  }
 }
 
 .st.clickable {
@@ -895,12 +927,27 @@ body.is-resizing {
   background: var(--c-border);
 }
 
+/* 引擎指示：图标 + 名字，窄窗口由下面的媒体查询只留图标 */
+.st-engine {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .st-badge {
   padding: 0 6px;
   border-radius: 4px;
   background: var(--c-island-2);
   color: var(--c-dim);
   font-size: 10.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.st-badge svg.eng-ico {
+  width: 11px;
+  height: 11px;
 }
 
 .st-badge.clickable {
@@ -1114,6 +1161,69 @@ textarea.raw {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+/* 语言菜单：一百多种语言，靠搜索定位而不是长列表 */
+.lang-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lang-search {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input, var(--bg));
+  outline: none;
+}
+
+.lang-search:focus {
+  border-color: var(--accent);
+}
+
+.lang-auto {
+  align-self: flex-start;
+}
+
+.lang-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 6px;
+  max-height: 46vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+/* 当前引擎能着色多少种语言：并集菜单里的标记需要一句话解释 */
+.lang-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--c-dim);
+}
+
+.lang-grid .btn {
+  justify-content: flex-start;
+  text-align: left;
+  font-size: 12px;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.lang-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lang-empty {
+  font-size: 12px;
+  opacity: 0.7;
 }
 
 /* 编解码工具：夹在输入框与输出框之间的动作行 */

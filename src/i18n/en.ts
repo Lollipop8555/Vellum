@@ -53,6 +53,7 @@ export const en: Record<keyof typeof zh, string> = {
   'status.highlightHint': 'Toggle syntax highlighting (turn it off if a big file stutters)',
   'status.highlightNa': 'no syntax',
   'status.highlightNaHint': 'No grammar detected for this file — click to pick one',
+  'status.highlightNoEngine': 'This engine has no grammar for that language; the engine on the icon does — click to switch',
   'status.line': 'Ln {line}, Col {col}',
   'status.count': '{lines} lines · {chars} chars · {words} words',
 
@@ -117,6 +118,12 @@ export const en: Record<keyof typeof zh, string> = {
   'dialog.encoding': 'Re-decode with encoding',
   'dialog.language': 'Syntax highlighting',
   'lang.auto': 'Auto detect',
+  'lang.search': 'Search languages (e.g. python, rs, yaml)',
+  'lang.noMatch': 'No language matches',
+  'lang.engineNote': 'Using {engine} · {n} languages can be highlighted. Marked languages are supported by one engine only; picking one switches engines.',
+  'lang.onlyEngine': 'Only {engine} has a grammar — picking this also switches engines',
+  'confirm.switchEngine': '“{lang}” is only supported by {engine}. Switch to {engine} now?',
+  'toast.engineSwitched': 'Switched to {engine}',
   'confirm.bigEngine': 'This file is in large-file mode. Switching engines reloads the whole document and may be slow. Continue?',
   'confirm.hugeBody':
     'This file is {size}, above {limit}. It opens read-only and holds the whole document in memory, which may be slow or stall on low-end machines. Open it anyway?',

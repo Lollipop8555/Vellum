@@ -29,14 +29,34 @@
 
 ### 编辑
 
-- CodeMirror 6 / Monaco 双引擎，顶栏切换，偏好按文件记忆
-- 语法高亮：JS/TS、JSON、HTML、CSS、Markdown、YAML、XML、SQL、Python、Java、Go、Rust、C/C++、PHP
+- CodeMirror 6 / Monaco 双引擎，顶栏用图标切换（CodeMirror 尖括号 / Monaco 蓝底 M），偏好按文件记忆
+- 语法高亮：110 项语言可选，按扩展名/文件名自动识别，也可在语言菜单里手选（见下）
 - 自动换行、只读模式、文档信息（大小、行数、字符、字数、语言、引擎、时间）
 - 右竖条图标直达：文本加工、文档信息、与历史版本对比、与另一个文件对比、编解码工具；没有打开文件时只留编解码工具
 - 字号（11–20px）与强调色开关，入口在编辑区「更多」菜单，跨会话记忆
 - 行/列、字符数、字数的状态栏实时显示
 - Markdown 右侧预览（左缘拖拽调宽、双击还原、宽度跨会话记住）+ 打印（可直接出 PDF）；非 Markdown 文件不显示预览按钮，免得点了只弹提示
 - 预览支持 mermaid 图表（```` ```mermaid ```` 代码块，按需懒加载，仅在有图表时才下载渲染器）
+
+### 语言支持
+
+语言表在 `src/editors/lang-registry.ts`，一份数据同时喂给语言菜单、扩展名推断和两个引擎的映射，共 110 项（含「纯文本」与「Android Logcat」）：
+
+| 引擎 | 可着色 | 说明 |
+|---|---|---|
+| CodeMirror | 90 | 15 种官方 lezer 语法（精确、随主包加载）+ 73 种 stream 模式（按语言懒加载，首次选中才下载几十 KB 的 chunk） |
+| Monaco | 67 | `basic-languages` 的 Monarch 语法（早已随 Monaco 入库，不用额外拉包），注册后 `setModelLanguage` 即生效 |
+| 两个都有 | 45 | 常用语言基本都在这一档 |
+
+Monaco 有两处要自己补：`basic-languages` 里没有 JSON（它属于 `vs/language/json` 语言服务，拉进来会带上 json worker），也没有 logcat。两者都用 `setMonarchTokensProvider` / `setTokensProvider` 在 `src/editors/monaco.ts` 里就地实现，只上色，不做校验与补全，配色与 CodeMirror 对齐。
+
+扩展名与文件名优先于内容嗅探：`.tsx`→TypeScript、`CMakeLists.txt`→CMake、`Dockerfile`→Dockerfile、`nginx.conf`→Nginx。`.m` 归 Objective-C（MATLAB 需在菜单里手选）。两引擎都没有的语言不收，所以菜单里每一行至少有一个引擎能上色。
+
+语言菜单（点状态栏的语言名）是**两个引擎的并集**，带搜索框，可输入英文名、id 或中文别名（如 `汇编`、`数据库`、`容器`），首个按钮是「自动识别」。只有一侧引擎有语法的语言会在条目右侧挂上那个引擎的小图标（悬停有说明）；点它不会白点：当前引擎上不了色时先弹一句确认，确定后连引擎带语言一起换过去。
+
+同一个「无语法」逻辑也体现在状态栏：当前引擎没有这门语言的语法时，高亮徽标一直显示（哪怕文件不大、开关开着），徽标上挂的是能着色的那一侧引擎的图标，点一下同样走确认换引擎。
+
+两个引擎的图标是 `src/ui/icons.ts` 里自绘的简化标记（CodeMirror = 一对尖括号，Monaco = 蓝底「M」山峰），不是官方 logo——两家都没有提供可再分发的矢量资产。界面上尽量用图标代替「CodeMirror / Monaco」这类长名字，名字只留在 tooltip 和弹窗标题里。
 
 ### 保存
 
@@ -107,7 +127,7 @@ JSON / JS / TS / HTML / CSS / Markdown / YAML（Prettier）、XML（xml-formatte
 
 CodeMirror 与 Monaco 的源码以副本形式放在 `vendor/`，**提交进仓库**，构建和类型检查都只读这份副本：
 
-- `vite.config.ts` 按 `vendor/VERSIONS.json` 生成别名，把 `@codemirror/*`、`@lezer/*`、`@marijn/*`、`monaco-editor` 等指向本地副本；
+- `vite.config.ts` 按 `vendor/VERSIONS.json` 生成别名，把 `@codemirror/*`、`@codemirror/legacy-modes`、`@lezer/*`、`@marijn/*`、`monaco-editor` 等指向本地副本；
 - `tsconfig.json` 的 `paths` 指向同一处，所以 `node_modules` 里没有这些包也能通过类型检查与构建；
 - `package.json` 不再声明这些依赖，npm 升级或 registry 变动都影响不到已提交的产物。
 
@@ -147,7 +167,7 @@ npm run preview
 ```
 src/
   shell/      外壳：app 状态机、IndexedDB、保存、编码、格式化、Diff、快照、互斥
-  editors/    引擎适配：adapter 接口 + codemirror + monaco + 语言映射
+  editors/    引擎适配：adapter 接口 + codemirror + monaco + lang-registry（语言表）
   ui/         岛屿布局、样式、抽屉动画、对话框、侧栏、状态栏、主题、toast
   i18n/       zh / en 词典与运行时
 public/       manifest、图标、Service Worker
@@ -161,6 +181,7 @@ scripts/      vendor-engines.mjs：同步 / 拉取 / 校验
 - 刷新后重新解码非 UTF-8 文件需要原始字节；超过 5MB 的非 UTF-8 文件不会保留原始字节副本
 - 大文件切换引擎时会重新挂载，30MB 量级需要数秒
 - 首次切到 Monaco 需下载约 900KB（gzip），之后由 Service Worker 缓存
+- 有 43 种语言只有 CodeMirror 有语法（Haskell、Fortran、Erlang、Groovy、LaTeX 等），在 Monaco 下状态栏显示「无语法」；另有 22 种只有 Monaco 有（ABAP、Apex、Bicep、Q# 等），在 CodeMirror 下同样显示「无语法」
 
 ## 隐私
 

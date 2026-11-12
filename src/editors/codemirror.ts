@@ -4,6 +4,7 @@ import {
   Prec,
   StateEffect,
   StateField,
+  type Extension,
 } from '@codemirror/state'
 import {
   Decoration,
@@ -32,7 +33,14 @@ import {
 import { closeBrackets, autocompletion, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { Tag, tags } from '@lezer/highlight'
 import type { EditorAdapter, EditorOptions, SearchApi } from './adapter'
-import { cmLanguage, scanLogcatLine, type LangId, type LogcatToken } from './languages'
+import {
+  cmLanguageAsync,
+  cmLanguageSync,
+  cmSupports,
+  scanLogcatLine,
+  type LangId,
+  type LogcatToken,
+} from './languages'
 
 /** 颜色一律引用 CSS 变量，切换主题无需重建编辑器 */
 const vellumTheme = EditorView.theme({
@@ -161,7 +169,12 @@ const logcatLanguage = StreamLanguage.define({
 })
 
 /** logcat 的扩展不走 languages.ts，避免那两个模块互相引用 */
-const langExtension = (id: LangId) => (id === 'logcat' ? logcatLanguage : cmLanguage(id))
+const langExtension = (id: LangId): Extension | null =>
+  id === 'logcat' ? logcatLanguage : cmLanguageSync(id)
+
+/** stream 模式是空闲时按需下载的，首帧先不上色，到货再补 */
+const loadLangExtension = (id: LangId): Promise<Extension | null> =>
+  id === 'logcat' ? Promise.resolve(logcatLanguage) : cmLanguageAsync(id)
 
 /* ---------------- 查找高亮 ---------------- */
 
@@ -232,9 +245,12 @@ export class CodeMirrorAdapter implements EditorAdapter {
   private readOnlyComp = new Compartment()
   private wrapComp = new Compartment()
   private opts: EditorOptions | null = null
+  /** 语言是异步到货的，切得太快时只认最后一次 */
+  private langToken = 0
 
   async mount(el: HTMLElement, opts: EditorOptions): Promise<void> {
     this.opts = opts
+    const initialLang = langExtension(opts.language)
     const state = EditorState.create({
       doc: opts.value,
       extensions: [
@@ -282,7 +298,7 @@ export class CodeMirrorAdapter implements EditorAdapter {
           indentWithTab,
         ]),
         vellumTheme,
-        this.langComp.of(langExtension(opts.language)),
+        this.langComp.of(initialLang ?? []),
         // 只读会把 contenteditable 关掉，元素就不可聚焦，Cmd+End / 方向键全部失效；
         // 补一个 tabindex 让只读的大文件也能用键盘翻
         EditorView.contentAttributes.of({ tabindex: '0' }),
@@ -304,6 +320,29 @@ export class CodeMirrorAdapter implements EditorAdapter {
 
     this.view = new EditorView({ state, parent: el })
     this.setFontSize(opts.fontSize)
+    if (!initialLang) this.applyLanguage(opts.language)
+  }
+
+  /**
+   * 切语言：有同步解析器就立刻换上，否则先清空再等 stream 模式下载完。
+   * 编辑器始终可用，只是颜色会晚几十毫秒。
+   */
+  private applyLanguage(id: LangId) {
+    const token = ++this.langToken
+    const sync = langExtension(id)
+    if (sync) {
+      this.view?.dispatch({ effects: this.langComp.reconfigure(sync) })
+      return
+    }
+    this.view?.dispatch({ effects: this.langComp.reconfigure([]) })
+    loadLangExtension(id)
+      .then((ext) => {
+        if (token !== this.langToken || !this.view || !ext) return
+        this.view.dispatch({ effects: this.langComp.reconfigure(ext) })
+      })
+      .catch(() => {
+        /* 模式文件下载失败就保持纯文本，不影响编辑 */
+      })
   }
 
   getValue(): string {
@@ -326,7 +365,11 @@ export class CodeMirrorAdapter implements EditorAdapter {
   }
 
   setLanguage(id: LangId): void {
-    this.view?.dispatch({ effects: this.langComp.reconfigure(langExtension(id)) })
+    this.applyLanguage(id)
+  }
+
+  supportsLanguage(id: LangId): boolean {
+    return cmSupports(id)
   }
 
   setReadOnly(v: boolean): void {

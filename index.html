@@ -40,8 +40,8 @@
           <button class="btn btn-primary" id="saveBtn" data-i18n="action.save" disabled></button>
 
           <div class="seg" id="engineSeg" role="group" data-i18n-title="action.engine">
-            <button class="seg-item is-active" data-engine="cm">CodeMirror</button>
-            <button class="seg-item" data-engine="monaco">Monaco</button>
+            <button class="seg-item is-active" data-engine="cm" aria-label="CodeMirror"></button>
+            <button class="seg-item" data-engine="monaco" aria-label="Monaco"></button>
           </div>
 
           <button class="btn btn-ghost" id="langBtn" title="Language">中</button>
@@ -304,7 +304,7 @@
         <span class="spacer"></span>
         <span class="st" id="stCache"></span>
         <span class="st-sep"></span>
-        <span class="st" id="stEngine">CodeMirror</span>
+        <span class="st st-engine" id="stEngine"></span>
         <span class="st-badge clickable" id="stHighlight" hidden></span>
         <span class="st-badge" id="stLight" hidden data-i18n="status.light"></span>
         <span class="st-badge" id="stReadonly" hidden></span>

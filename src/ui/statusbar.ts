@@ -1,6 +1,8 @@
 import { t } from '../i18n'
 import { wordCount } from '../shell/transform'
 import { formatBytes } from '../shell/largefile'
+import { ENGINE_NAMES, engineIcon } from './icons'
+import type { EngineId } from '../types'
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
@@ -36,8 +38,11 @@ export function setEol(eol: 'lf' | 'crlf') {
   $('stEol').textContent = eol === 'crlf' ? 'CRLF' : 'LF'
 }
 
-export function setEngineLabel(label: string) {
-  $('stEngine').textContent = label
+/** 引擎指示：图标 + 名字，窄窗口里由 CSS 只留图标 */
+export function setEngine(id: EngineId) {
+  const chip = $('stEngine')
+  chip.innerHTML = `${engineIcon(id)}<span class="st-engine-name">${ENGINE_NAMES[id]}</span>`
+  chip.title = ENGINE_NAMES[id]
 }
 
 /**
@@ -62,14 +67,25 @@ export function setLight(v: boolean) {
 /** on：正在上色；off：用户关掉了；na：这文件没语法可挂（纯文本），开关没有意义 */
 export type HighlightState = 'on' | 'off' | 'na'
 
-/** 大文件的语法高亮开关，点击切换；只在值得提醒时出现 */
-export function setHighlight(state: HighlightState, show: boolean) {
+/**
+ * 大文件的语法高亮开关，点击切换；只在值得提醒时出现。
+ * `alt` 是「另一个引擎能着色」时给的那个引擎：徽标上挂它的图标，
+ * 看见的是「换过去就行」，而不是一行「当前引擎不支持」的字。
+ */
+export function setHighlight(state: HighlightState, show: boolean, alt: EngineId | null = null) {
   const chip = $('stHighlight')
   chip.hidden = !show
-  chip.textContent = t(
+  const label = t(
     state === 'on' ? 'status.highlight' : state === 'off' ? 'status.highlightOff' : 'status.highlightNa',
   )
-  chip.title = t(state === 'na' ? 'status.highlightNaHint' : 'status.highlightHint')
+  chip.innerHTML = alt ? `${engineIcon(alt)}<span>${label}</span>` : label
+  chip.title = t(
+    state === 'na' && alt
+      ? 'status.highlightNoEngine'
+      : state === 'na'
+        ? 'status.highlightNaHint'
+        : 'status.highlightHint',
+  )
   // 「关掉」和「没语法」都不是在着色，样式上一并压暗，别让人以为正开着
   chip.classList.toggle('is-off', state !== 'on')
 }

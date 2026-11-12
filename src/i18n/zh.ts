@@ -52,6 +52,7 @@ export const zh = {
   'status.highlightHint': '点击切换语法高亮（大文件卡顿时可关掉）',
   'status.highlightNa': '无语法',
   'status.highlightNaHint': '这个文件没识别出语法，点这里选一个',
+  'status.highlightNoEngine': '当前引擎没有这个语言的语法，图标那一侧有；点这里直接换过去',
   'status.line': '行 {line}, 列 {col}',
   'status.count': '{lines} 行 · {chars} 字符 · {words} 词',
 
@@ -116,6 +117,12 @@ export const zh = {
   'dialog.encoding': '以其他编码重新解码',
   'dialog.language': '语法高亮',
   'lang.auto': '自动检测',
+  'lang.search': '搜索语言（如 python、rs、yaml）',
+  'lang.noMatch': '没有匹配的语言',
+  'lang.engineNote': '当前为 {engine} 引擎 · {n} 种语言可着色。带有标记的语言为单引擎支持。选择将同时切换引擎。',
+  'lang.onlyEngine': '仅 {engine} 有语法，选中会一起切换引擎',
+  'confirm.switchEngine': '「{lang}」只有 {engine} 能着色，现在切到 {engine} 吗？',
+  'toast.engineSwitched': '已切换到 {engine}',
   'confirm.bigEngine': '该文件已进入大文件模式，切换引擎会重新加载全部内容，可能明显卡顿。仍要继续吗？',
   'confirm.hugeBody':
     '文件大小 {size}，超过 {limit}。将以只读方式打开，内存占用较高，低配置机器可能变慢甚至卡顿。仍要导入吗？',
