@@ -79,6 +79,8 @@ export const zh = {
   'toast.binary': '这是一个二进制文件，无法以文本方式打开',
   'toast.encodingNote': '该编码不支持写回，保存后将转为 UTF-8',
   'toast.locked': '该文件已在另一个标签页中打开，本页为只读',
+  'toast.tabDeleted': '该文件已在另一个标签页中删除，本页已关闭它',
+  'toast.tabFree': '另一个标签页已放开该文件，本页可以编辑了',
   'toast.readonlyOn': '已切回只读',
   'toast.readonlyOff': '已解除只读，可以编辑了',
   'toast.readonlyOffBig': '已解除只读；大文件不自动保存草稿，改完记得手动保存',

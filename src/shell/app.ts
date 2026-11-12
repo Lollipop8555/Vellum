@@ -18,6 +18,7 @@ import { getSettings, loadSettings, updateSettings } from './settings'
 import { DEFAULT_FORMAT, canFormat, formatText } from './format'
 import { transformText, type TransformId } from './transform'
 import { FileLock } from './lock'
+import { initTabs, notifyFiles, readTabFile, rememberTabFile } from './tabs'
 import { Drawer } from '../ui/layout'
 import { applyTheme } from '../ui/theme'
 import { toast } from '../ui/toast'
@@ -116,7 +117,11 @@ export async function startApp() {
   await refreshFiles()
   await refreshStorage()
 
-  const lastId = await store.getMeta<string>('lastFileId')
+  wireTabs()
+
+  // 只恢复「本标签页」上次打开的文件：刷新页面照旧，新开标签页是干净的，
+  // 不会再被另一个标签页正在编辑的文件顶掉
+  const lastId = readTabFile()
   if (lastId) await openRecord(lastId)
 
   void store.requestPersistence()
@@ -426,6 +431,7 @@ async function ingestFile(file: File, handle?: FileSystemFileHandle) {
   // 抽屉底部不再显示缓存占用，导入后要把状态栏的数字刷新一次
   await refreshStorage()
   await openRecord(rec.id)
+  notifyFiles(rec.id)
   toast(t('toast.imported', { name: rec.name }))
   if (encoding !== 'utf-8') toast(t('toast.encodingNote'))
 }
@@ -460,6 +466,7 @@ async function importPasted() {
   await refreshFiles()
   await refreshStorage()
   await openRecord(rec.id)
+  notifyFiles(rec.id)
 }
 
 /* ------------------------------------------------------------ 打开文件 */
@@ -500,7 +507,7 @@ async function openRecord(id: string) {
   const text = await rec.blob.text()
   await mountEditor(text)
 
-  await store.setMeta('lastFileId', id)
+  rememberTabFile(id)
   el('emptyState').hidden = true
   await refreshSnapshots()
   await refreshFiles()
@@ -508,6 +515,56 @@ async function openRecord(id: string) {
   updateFormatButton()
   renderPreviewNow()
   renderDrawerList()
+}
+
+/** 回到空态：删除当前文件、或别的标签页把它删了，都走这里 */
+function closeCurrent() {
+  state.editor?.destroy()
+  state.editor = null
+  state.current = null
+  state.text = ''
+  state.dirty = false
+  state.locked = false
+  state.snapshots = []
+  lock.release()
+  rememberTabFile(null)
+  el('editorHost').innerHTML = ''
+  el('emptyState').hidden = false
+  el('rightPanel').classList.remove('is-open')
+  state.previewOpen = false
+  refreshMeta()
+  sb.setLanguage('—')
+  sb.setLight(false)
+  sb.setReadonly(false)
+  updateDirtyDot()
+  updateFormatButton()
+}
+
+/**
+ * 多标签页：数据本来就是共享的 IndexedDB，这里只同步「列表」和「写锁」。
+ * 别的标签页导入/删除文件时刷一下列表；它关掉正在编辑的文件时，本页解除只读。
+ */
+function wireTabs() {
+  initTabs((e) => {
+    if (e.removed && e.fileId && state.current?.id === e.fileId) {
+      closeCurrent()
+      renderDrawerList()
+      toast(t('toast.tabDeleted'), 'error')
+    }
+    void refreshFiles()
+    void refreshStorage()
+  })
+
+  lock.onFree((fileId) => {
+    if (!state.locked || state.current?.id !== fileId) return
+    state.locked = false
+    state.editor?.setReadOnly(state.current.readOnly)
+    refreshMeta()
+    toast(t('toast.tabFree'))
+  })
+
+  // 关页/切走时把写锁让出去，否则另一个标签页会一直卡在只读
+  window.addEventListener('pagehide', () => lock.release())
 }
 
 async function mountEditor(text: string, offset = 0) {
@@ -728,6 +785,7 @@ async function saveFile() {
     await refreshFiles()
     await refreshSnapshots()
     await refreshStorage()
+    notifyFiles(rec.id)
 
     toast(
       res.how === 'download'
@@ -1119,25 +1177,10 @@ async function removeFile(id: string) {
 
   await store.deleteFileCascade(id)
 
-  if (state.current?.id === id) {
-    state.editor?.destroy()
-    state.editor = null
-    state.current = null
-    state.text = ''
-    state.dirty = false
-    lock.release()
-    el('editorHost').innerHTML = ''
-    el('emptyState').hidden = false
-    el('rightPanel').classList.remove('is-open')
-    state.previewOpen = false
-    refreshMeta()
-    sb.setLanguage('—')
-    sb.setLight(false)
-    sb.setReadonly(false)
-    updateDirtyDot()
-    updateFormatButton()
-    await store.setMeta('lastFileId', null)
-  }
+  // 先告诉别的标签页文件没了，再收自己的尾：否则它们会先收到「放开写锁」
+  // 并弹一句「可以编辑了」，紧接着又被关闭，两条提示互相打架
+  notifyFiles(id, true)
+  if (state.current?.id === id) closeCurrent()
 
   await refreshFiles()
   await refreshSnapshots()

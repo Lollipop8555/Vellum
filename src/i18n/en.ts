@@ -80,6 +80,8 @@ export const en: Record<keyof typeof zh, string> = {
   'toast.binary': 'This looks like a binary file and cannot be opened as text',
   'toast.encodingNote': 'This encoding cannot be written back, the file will be saved as UTF-8',
   'toast.locked': 'This file is open in another tab, this tab is read-only',
+  'toast.tabDeleted': 'This file was deleted in another tab, it is closed here',
+  'toast.tabFree': 'The other tab released this file — you can edit it now',
   'toast.readonlyOn': 'Locked as read-only',
   'toast.readonlyOff': 'Unlocked — you can edit now',
   'toast.readonlyOffBig': 'Unlocked — large files skip draft autosave, save manually when done',

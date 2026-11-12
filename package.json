@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Vellum - a local-first browser text editor with swappable engines",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && npm run vendor:check && vite build",

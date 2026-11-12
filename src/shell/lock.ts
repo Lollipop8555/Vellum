@@ -11,6 +11,7 @@ export class FileLock {
   private ch: BroadcastChannel | null
   private held: string | null = null
   private busyHandler: ((fileId: string) => void) | null = null
+  private freeHandler: ((fileId: string) => void) | null = null
 
   constructor() {
     this.ch = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(CHANNEL) : null
@@ -23,14 +24,26 @@ export class FileLock {
       if (msg.type === 'busy' && msg.fileId === this.pending) {
         this.conflict = true
       }
+      // 占着锁的标签页关掉了，等着的这页可以接手，不必一直只读
+      if (msg.type === 'release' && msg.fileId === this.watching) {
+        this.watching = null
+        this.freeHandler?.(msg.fileId)
+      }
     })
   }
 
   private pending: string | null = null
   private conflict = false
+  /** 因为别人占锁而只读的文件，记下来才能等到它 release */
+  private watching: string | null = null
 
   onBusy(fn: (fileId: string) => void) {
     this.busyHandler = fn
+  }
+
+  /** 冲突解除（对方关页或放锁）时回调，参数是那个文件 id */
+  onFree(fn: (fileId: string) => void) {
+    this.freeHandler = fn
   }
 
   async claim(fileId: string): Promise<boolean> {
@@ -41,9 +54,11 @@ export class FileLock {
     await new Promise((r) => setTimeout(r, 90))
     this.pending = null
     if (this.conflict) {
+      this.watching = fileId
       this.busyHandler?.(fileId)
       return false
     }
+    this.watching = null
     this.held = fileId
     return true
   }
