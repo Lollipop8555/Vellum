@@ -572,6 +572,7 @@ function wireEditorHead() {
   el('moreBtn').addEventListener('click', (e) => openMoreMenu(e.currentTarget as HTMLElement))
   el('emptyPickBtn').addEventListener('click', () => void importFile())
   el('emptyPasteBtn').addEventListener('click', () => void importPasted())
+  el('emptyUrlBtn').addEventListener('click', () => void importFromUrl())
 }
 
 function openMoreMenu(anchor: HTMLElement) {

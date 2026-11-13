@@ -52,7 +52,7 @@ export const zh = {
 
 
   'empty.title': '打开一个文件开始',
-  'empty.hint': '拖入文件，或点击选择本地文件。',
+  'empty.hint': '拖入文件，或从下面选一种方式导入。',
   'empty.privacy': '文件内容只保存在本机浏览器，不会上传到任何服务器。',
   'empty.drop': '松开以导入文件',
 

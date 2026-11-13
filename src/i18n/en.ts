@@ -53,7 +53,7 @@ export const en: Record<keyof typeof zh, string> = {
   'rail.tools': 'Encode tools',
 
   'empty.title': 'Open a file to begin',
-  'empty.hint': 'Drop a file here, or pick one from disk.',
+  'empty.hint': 'Drop a file here, or import one of the ways below.',
   'empty.privacy': 'Files stay in this browser. Nothing is uploaded to any server.',
   'empty.drop': 'Release to import',
 

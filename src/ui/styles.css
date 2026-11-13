@@ -625,8 +625,17 @@ svg.eng-ico {
 
 .empty-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: center;
+}
+
+/* 窄窗口三个入口挤一行会各留半截，竖排等宽更像一组主操作 */
+@media (max-width: 480px) {
+  .empty-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 .empty-privacy {
