@@ -69,6 +69,8 @@ export default defineConfig({
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1200,
+    // 产出一份产物清单，scripts/build-sw.mjs 靠它算出 Service Worker 的预缓存闭包
+    manifest: true,
     // 引擎源码不在 node_modules 下，commonjs 插件默认只处理 node_modules，
     // 导致 unified 依赖的 CJS 包（extend）拿不到 default 导出
     commonjsOptions: {

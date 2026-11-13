@@ -163,6 +163,18 @@ npm run preview
 
 本地与 `npm run preview` 都跑在根路径（`http://localhost:5173`、`http://localhost:4173`）。只有项目页这种 `/<repo>/` 子路径部署才需要前缀，由 workflow 注入 `VITE_BASE`；绑定自定义域名或用户页时，删掉 workflow 里那一行即可。
 
+## 离线（PWA）
+
+生产构建会注册 `public/sw.js`，三层分工：
+
+- **外壳预缓存**：`install` 阶段就把 `index.html`、入口 chunk、样式、图标写进 `vellum-shell-<构建号>`。这一步不能省——Service Worker 在 `window.load` 之后才注册，那时首屏资源早就下载完了，只靠运行时缓存的话第一次访问的缓存是空的，断网刷新只能拿到 503；
+- **导航 NetworkFirst**：在线拿新壳，断网退回缓存的 `index.html`；
+- **其余资源 CacheFirst**：Monaco、Prettier 插件、mermaid/graphviz 这些按需 chunk 在第一次用到时收进 `vellum-runtime`（缓存名不带构建号，文件名自带内容哈希，跨发布复用），之后离线可用。
+
+清单不手写：`vite build` 之后由 `scripts/build-sw.mjs` 读 `dist/.vite/manifest.json`，从 `index.html` 引用的 chunk 出发沿静态 import 走闭包，再把清单和构建号写进 `dist/sw.js`。每次发布都换构建号，旧外壳缓存在 `activate` 里清掉。清单里的地址全是相对路径，根路径部署与 `/<repo>/` 项目页都不用额外配置。
+
+`npm run dev` 不注册 Service Worker（否则 HMR 会一直命中缓存）。验证离线用 `npm run build` + `npm run preview`：DevTools → Application 里确认 `sw.js` 已激活，Network 勾 Offline 再刷新。
+
 ## 目录
 
 ```
@@ -173,7 +185,7 @@ src/
   i18n/       zh / en 词典与运行时
 public/       manifest、图标、Service Worker
 vendor/       双引擎及其依赖的源码副本 + VERSIONS.json 版本清单
-scripts/      vendor-engines.mjs：同步 / 拉取 / 校验
+scripts/      vendor-engines.mjs：同步 / 拉取 / 校验；build-sw.mjs：生成 Service Worker 预缓存清单
 ```
 
 ## 已知限制
