@@ -3,7 +3,7 @@
  * 编码错一位，服务器就会回一张错的图，而错误信息只有一句「语法错误」，
  * 靠浏览器猜太难了。
  *
- * 规则来自 PlantUML 自己的 `encode6bit`：先 zlib deflate，再用它自己的 base64 变体。
+ * 规则来自 PlantUML 自己的 `encode6bit`：先 deflate，再用它自己的 base64 变体。
  * 注意字母表顺序和标准 base64 不同，不能靠替换，只能按 6bit 重新拼。
  */
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_'
@@ -23,11 +23,29 @@ function encode64(bytes: Uint8Array): string {
   return out
 }
 
-/** zlib deflate（RFC 1950）；环境没有 CompressionStream 时返回 null，由调用方降级 */
-async function deflate(text: string): Promise<Uint8Array | null> {
+/**
+ * **裸** DEFLATE（RFC 1951），环境没有 CompressionStream 时返回 null。
+ *
+ * 这里踩过一次坑：PlantUML 默认编码要的是裸 deflate，不是 zlib（RFC 1950）。
+ * `CompressionStream('deflate')` 出的流以 zlib 头 `0x78 0x9c` 开头，
+ * 服务器会把这两个字节当成 BFINAL/BTYPE 读掉，于是回一句
+ * 「seems to generated a bad URL … your plugin is using HUFFMAN encoding」，图上什么都不画。
+ * 所以优先用 `deflate-raw`；老内核不支持时，把 zlib 的 2 字节头与 4 字节 adler32 尾切掉。
+ */
+async function deflateRaw(text: string): Promise<Uint8Array | null> {
   if (typeof CompressionStream === 'undefined') return null
-  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('deflate'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
+  const drain = async (stream: CompressionStream) =>
+    new Uint8Array(
+      await new Response(new Blob([text]).stream().pipeThrough(stream)).arrayBuffer(),
+    )
+
+  try {
+    return await drain(new CompressionStream('deflate-raw'))
+  } catch {
+    const zlib = await drain(new CompressionStream('deflate'))
+    // 2 字节头 + 4 字节 adler32；理论上不会短于 6 字节，兜一下免得切出负数
+    return zlib.length > 6 ? zlib.subarray(2, zlib.length - 4) : zlib
+  }
 }
 
 /**
@@ -35,7 +53,7 @@ async function deflate(text: string): Promise<Uint8Array | null> {
  * 没有 CompressionStream 就退回 `~h` 十六进制：体积翻倍，但语法简单、服务端一定认。
  */
 export async function encodeSource(text: string): Promise<string> {
-  const bytes = await deflate(text)
+  const bytes = await deflateRaw(text)
   if (bytes) return encode64(bytes)
   const hex = [...new TextEncoder().encode(text)].map((b) => b.toString(16).padStart(2, '0')).join('')
   return `~h${hex}`

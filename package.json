@@ -16,6 +16,7 @@
     "vendor": "node scripts/vendor-engines.mjs",
     "vendor:pull": "node scripts/vendor-engines.mjs --pull",
     "vendor:check": "node scripts/vendor-engines.mjs --check",
+    "verify": "node plans/verify.mjs",
     "dict": "node scripts/vendor-dict.mjs",
     "dict:check": "node scripts/vendor-dict.mjs --check"
   },

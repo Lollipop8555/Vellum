@@ -1396,6 +1396,81 @@ body.is-resizing {
   padding: 0;
 }
 
+/**
+ * 预览里的代码高亮。
+ *
+ * lowlight 输出的是 highlight.js 的 `hljs-*` 类名，配色必须自己补：
+ * 编辑器那套是 Monaco / CM6 的 token 色，管不到预览的 DOM。
+ * 这里只做类名 → `--syn-*` 的映射，色值仍集中在 :root，两套渲染共用一个色板。
+ */
+.markdown-body .hljs-comment,
+.markdown-body .hljs-quote {
+  color: var(--syn-com);
+  font-style: italic;
+}
+
+.markdown-body .hljs-keyword,
+.markdown-body .hljs-selector-tag,
+.markdown-body .hljs-literal,
+.markdown-body .hljs-doctag,
+.markdown-body .hljs-meta .hljs-keyword {
+  color: var(--syn-key);
+}
+
+.markdown-body .hljs-string,
+.markdown-body .hljs-regexp,
+.markdown-body .hljs-addition,
+.markdown-body .hljs-meta .hljs-string,
+.markdown-body .hljs-template-tag {
+  color: var(--syn-str);
+}
+
+.markdown-body .hljs-number,
+.markdown-body .hljs-symbol,
+.markdown-body .hljs-bullet,
+.markdown-body .hljs-link,
+.markdown-body .hljs-selector-attr {
+  color: var(--syn-num);
+}
+
+.markdown-body .hljs-title,
+.markdown-body .hljs-title.function_,
+.markdown-body .hljs-section,
+.markdown-body .hljs-name,
+.markdown-body .hljs-meta {
+  color: var(--syn-fn);
+}
+
+.markdown-body .hljs-type,
+.markdown-body .hljs-title.class_,
+.markdown-body .hljs-built_in,
+.markdown-body .hljs-class .hljs-title,
+.markdown-body .hljs-tag {
+  color: var(--syn-type);
+}
+
+.markdown-body .hljs-attr,
+.markdown-body .hljs-attribute,
+.markdown-body .hljs-property,
+.markdown-body .hljs-variable,
+.markdown-body .hljs-template-variable,
+.markdown-body .hljs-selector-class,
+.markdown-body .hljs-selector-id {
+  color: var(--syn-prop);
+}
+
+.markdown-body .hljs-deletion {
+  color: var(--c-danger);
+}
+
+.markdown-body .hljs-emphasis {
+  font-style: italic;
+}
+
+.markdown-body .hljs-strong {
+  font-weight: 600;
+}
+
 .markdown-body blockquote {
   margin: 0.8em 0;
   padding-left: 12px;
@@ -1416,6 +1491,16 @@ body.is-resizing {
 
 .markdown-body a {
   color: var(--c-accent);
+}
+
+/**
+ * href 被白名单摘掉的链接（`javascript:` / `data:` 一律不认）只剩一个空 `<a>`。
+ * 不这样兜一下，它仍会套上强调色和指针光标，看着像能点、点了没反应。
+ */
+.markdown-body a:not([href]) {
+  color: inherit;
+  cursor: text;
+  text-decoration: none;
 }
 
 .markdown-body hr {
@@ -2146,6 +2231,17 @@ textarea.raw {
 /* ---------- 打印 ---------- */
 
 @media print {
+  /**
+   * 屏幕上是「应用壳」：`html/body` 定死一屏、`overflow: hidden`，预览自己滚动。
+   * 打印必须把这套一起解开——只把 .workbench 改 auto 是不够的，
+   * body 仍被锁在视口高度里，长文档只会印出第一屏。
+   */
+  html,
+  body {
+    height: auto;
+    overflow: visible;
+  }
+
   body {
     background: #fff;
   }
@@ -2178,6 +2274,25 @@ textarea.raw {
     max-width: none;
     border: 0;
     box-shadow: none;
+    overflow: visible;
+  }
+
+  /* 预览原本是 flex:1 + overflow:auto 的滚动容器，打印时要摊平 */
+  .markdown-body {
+    flex: none;
+    height: auto;
+    overflow: visible;
+    padding: 0;
+  }
+
+  /* 图表、代码块、表格被分页切断基本不可读，能整块挪就整块挪 */
+  .markdown-body .mermaid-block,
+  .markdown-body .graphviz-block,
+  .markdown-body .plantuml-block,
+  .markdown-body pre,
+  .markdown-body table,
+  .markdown-body blockquote {
+    break-inside: avoid;
   }
 
   .panel-resizer {
