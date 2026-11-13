@@ -41,8 +41,17 @@ export function pickExportTarget(value, depth = 0) {
 }
 
 /** UMD/CJS 一定写 module.exports，ESM 一定写 export 语句 */
-const looksCjs = (code) =>
-  /(?:^|[^\w$.])module\.exports\b/.test(code) && !/(?:^|\n)\s*export\s/.test(code)
+/**
+ * 只认语法特征，不认 package.json 的 type 字段：vendor 里 index.js 混着 CJS 与 ESM。
+ *
+ * CJS 侧不能只看 `module.exports`：TS 编译产物常用
+ * `Object.defineProperty(exports, "__esModule", …)` + `exports.foo = foo`
+ * （典型受害者 @braintree/sanitize-url，dev 里会因为「没有 default 导出」整片崩掉）。
+ */
+const ESM_SYNTAX = /(?:^|[\n;])\s*(?:export\s+(?:default|const|let|var|function|class|async|\{|\*)|import\s+[\w$*{'"])/
+const CJS_SYNTAX = /(?:^|[^\w$.])(?:module\.exports\b|exports\.[\w$]|Object\.defineProperty\(\s*exports\b)/
+
+const looksCjs = (code) => CJS_SYNTAX.test(code) && !ESM_SYNTAX.test(code)
 
 const isCjsFile = (file) => {
   try {
@@ -135,17 +144,49 @@ async function* walk(dir) {
  * 只收「实际被引用」的标识符，避免把未使用的 CJS 包塞进 dev 预构建
  * （例如 elkjs 的默认入口 main.js 需要没装的 web-worker）。
  */
+/**
+ * 包根入口解析：exports['.'] → module → main → 无扩展名探测。
+ *
+ * 不能只靠「无扩展名探测」：`format` 这类老包的入口写在 `main: "format.js"`，
+ * 探测会落空，于是它被漏出 CJS 清单，dev 里直接 500。
+ */
+async function resolveEntry(dir) {
+  const pkgFile = path.join(dir, 'package.json')
+  if (existsSync(pkgFile)) {
+    let pkg
+    try {
+      pkg = JSON.parse(await readFile(pkgFile, 'utf8'))
+    } catch {
+      pkg = undefined
+    }
+    if (pkg) {
+      const exported = typeof pkg.exports === 'string' ? pkg.exports : pkg.exports?.['.']
+      for (const rel of [pickExportTarget(exported), pkg.module, pkg.main].filter(Boolean)) {
+        const found = resolveIn(dir, rel.replace(/^\.\//, ''))
+        if (found) return found
+      }
+    }
+  }
+  return resolveIn(dir, '')
+}
+
 export async function collectCjsImports(vendorDir, names, scanDirs = [vendorDir]) {
   const specs = new Set()
 
   for (const dir of scanDirs) {
     for await (const file of walk(dir)) {
+      // .d.ts 里全是 `import type`，不是运行时依赖
+      if (file.endsWith('.d.ts')) continue
       let code
       try {
         code = await readFile(file, 'utf8')
       } catch {
         continue
       }
+      // 注释里的 `@import {X} from 'y'`（JSDoc 类型标注）会被正则当成真导入，
+      // 典型受害者：lowlight 注释里的 `from 'highlight.js'`，
+      // 它会把整个 highlight.js 包塞进 CJS 预构建清单，让 dev 直接 EISDIR
+      code = code.replace(/\/\*[\s\S]*?\*\//g, ' ')
       if (!/(?:\bfrom\s*["']|\bimport\s*[("'])/.test(code)) continue
       for (const re of SPECIFIER_RE) {
         re.lastIndex = 0
@@ -191,7 +232,7 @@ export async function collectCjsImports(vendorDir, names, scanDirs = [vendorDir]
       const mapped = matchSubpath(subpathCache.get(name), sub)
       resolved = resolveIn(dir, mapped ?? sub)
     } else {
-      resolved = resolveIn(dir, '')
+      resolved = await resolveEntry(dir)
     }
     if (!resolved || !JS_FILE.test(resolved)) continue
 

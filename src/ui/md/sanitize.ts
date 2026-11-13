@@ -50,23 +50,33 @@ type AttrValue = AttrList[string]
 
 const base = defaultSchema
 
-function add(list: AttrValue | undefined, extra: string[]): AttrValue {
-  const existing = Array.isArray(list) ? (list as string[]) : []
-  return [...new Set([...existing, ...extra])]
+/**
+ * 放行某个标签上的全部 className。
+ *
+ * 光把 'className' 追加进白名单不够：GitHub schema 里 `code` 是
+ * `[['className', /^language-./]]` 这种带正则的收紧项，只要它还留在数组里，
+ * 不匹配的类名照样被丢掉——`hljs` 就是这么消失的（高亮 token 类在 span 上，不受影响）。
+ */
+function withClass(list: AttrValue | undefined, extra: string[] = []): AttrValue {
+  const entries = Array.isArray(list) ? list : []
+  const kept = entries.filter((entry) =>
+    Array.isArray(entry) ? entry[0] !== 'className' : entry !== 'className',
+  )
+  return [...new Set(['className', ...kept, ...extra.filter((name) => name !== 'className')])] as AttrValue
 }
 
 const attributes: AttrList = {
   ...base.attributes,
   // className 是高亮与 KaTeX 的唯一凭据；style 是 KaTeX 排版上下标的唯一手段
-  '*': add(base.attributes?.['*'], ['className', 'style']),
-  div: add(base.attributes?.div, ['className', 'style', 'dataMermaid']),
-  span: add(base.attributes?.span, ['className', 'style']),
-  pre: add(base.attributes?.pre, ['className']),
-  code: add(base.attributes?.code, ['className']),
-  a: add(base.attributes?.a, ['href', 'title', 'className']),
-  img: add(base.attributes?.img, ['src', 'alt', 'title', 'width', 'height']),
-  details: add(base.attributes?.details, ['open', 'className']),
-  summary: add(base.attributes?.summary, ['className']),
+  '*': withClass(base.attributes?.['*'], ['style']),
+  div: withClass(base.attributes?.div, ['style', 'dataMermaid']),
+  span: withClass(base.attributes?.span, ['style']),
+  pre: withClass(base.attributes?.pre),
+  code: withClass(base.attributes?.code),
+  a: withClass(base.attributes?.a, ['href', 'title']),
+  img: withClass(base.attributes?.img, ['src', 'alt', 'title', 'width', 'height']),
+  details: withClass(base.attributes?.details, ['open']),
+  summary: withClass(base.attributes?.summary),
   math: ['xmlns', 'display', 'className', 'style'],
   annotation: ['encoding'],
 }

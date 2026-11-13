@@ -1415,6 +1415,12 @@ body.is-resizing {
   margin: 1.6em 0;
 }
 
+/* frontmatter：不渲染成标题/引用，按元信息块的语气淡淡地摆着 */
+.markdown-body pre.frontmatter {
+  color: var(--c-dim);
+  border-style: dashed;
+}
+
 /* mermaid 图表：先显示源码，画好之后替换成图 */
 .mermaid-block {
   margin: 1em 0;

@@ -380,7 +380,9 @@ function wireRails() {
   el('previewClose').addEventListener('click', () => closePanel())
   el('previewPrint').addEventListener('click', () => {
     togglePanel('preview', true)
-    setTimeout(() => window.print(), 150)
+    // 渲染是异步的，`window.print()` 不会等 Promise：
+    // 必须先把这一轮渲染（含图表）跑完，否则会打出占位源码（§12.5）
+    void renderPreviewNow().finally(() => window.print())
   })
 }
 
@@ -2852,7 +2854,7 @@ function renderActivePanel() {
     renderIssuesPanel()
     return
   }
-  if (currentLang() === 'markdown') renderPreviewNow()
+  if (currentLang() === 'markdown') void renderPreviewNow()
 }
 
 let previewSeq = 0
@@ -2861,7 +2863,12 @@ function currentTheme(): 'dark' | 'light' {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
 }
 
-function renderPreviewNow() {
+/**
+ * 渲染预览。
+ * 异步：拿到 HTML 时文档可能已经变了，用 seq 丢弃过期结果。
+ * 返回 Promise 供「必须等渲染落地」的场景（打印）await。
+ */
+async function renderPreviewNow(): Promise<void> {
   if (!state.previewOpen || state.rightTab !== 'preview') return
   // 预览只画 Markdown：切到日志之类的文件时由 syncPanelButtons 转到大纲，
   // 别把几十 MB 文本丢给 marked
@@ -2870,35 +2877,33 @@ function renderPreviewNow() {
   const seq = ++previewSeq
   const scrollTop = body.scrollTop
   const text = state.text
-  void (async () => {
-    const html = await renderMarkdown(text)
-    // 渲染是异步的：拿到结果时文档、面板或主题可能已经变了
-    if (seq !== previewSeq || !state.previewOpen || state.rightTab !== 'preview') return
-    body.innerHTML = html
-    // 先复原一次滚动位置（没有图表的文档就到此为止），
-    // 图表从占位换成 svg 会改变高度，渲染完再校正一次
-    if (seq !== previewSeq) return
-    body.scrollTop = scrollTop
-    if (!body.querySelector('.mermaid-block')) return
-    // mermaid 体积大，只在文档里真有图表时才加载
-    const { renderMermaidBlocks } = await import('../ui/mermaid')
-    if (seq !== previewSeq || !state.previewOpen) return
-    await renderMermaidBlocks(body, currentTheme())
-    if (seq === previewSeq) body.scrollTop = scrollTop
-  })()
+  const html = await renderMarkdown(text)
+  // 渲染是异步的：拿到结果时文档、面板或主题可能已经变了
+  if (seq !== previewSeq || !state.previewOpen || state.rightTab !== 'preview') return
+  body.innerHTML = html
+  // 先复原一次滚动位置（没有图表的文档就到此为止），
+  // 图表从占位换成 svg 会改变高度，渲染完再校正一次
+  if (seq !== previewSeq) return
+  body.scrollTop = scrollTop
+  if (!body.querySelector('.mermaid-block')) return
+  // mermaid 体积大，只在文档里真有图表时才加载
+  const { renderMermaidBlocks } = await import('../ui/mermaid')
+  if (seq !== previewSeq || !state.previewOpen) return
+  await renderMermaidBlocks(body, currentTheme())
+  if (seq === previewSeq) body.scrollTop = scrollTop
 }
 
 /** 换主题后图表要按新配色重画，正文本身走 CSS 变量不用重建 */
 function refreshPreviewTheme() {
   if (!state.previewOpen) return
   if (!el('previewBody').querySelector('.mermaid-block')) return
-  renderPreviewNow()
+  void renderPreviewNow()
 }
 
 function schedulePreview() {
   if (!state.previewOpen || state.rightTab !== 'preview') return
   window.clearTimeout(previewTimer)
-  previewTimer = window.setTimeout(renderPreviewNow, 250)
+  previewTimer = window.setTimeout(() => void renderPreviewNow(), 250)
 }
 
 /* -------------------------------------------------------------- 代码检查 */

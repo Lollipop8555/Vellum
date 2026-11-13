@@ -4,6 +4,7 @@ import rehypeRaw from 'rehype-raw'
 import rehypeSanitize from 'rehype-sanitize'
 import rehypeSlug from 'rehype-slug'
 import rehypeStringify from 'rehype-stringify'
+import remarkFrontmatter from 'remark-frontmatter'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import remarkParse from 'remark-parse'
@@ -17,7 +18,7 @@ import { harden, schema } from './sanitize'
 
 /**
  * 管线顺序有讲究：
- * parse → gfm/math（改 mdast）→ rehype（mdast→hast，允许原始 HTML 通过）
+ * parse → frontmatter/gfm/math（改 mdast）→ rehype（mdast→hast，允许原始 HTML 通过）
  * → raw（把 HTML 解析成真节点）→ sanitize（一次白名单）
  * → harden（清理 style 值）→ slug（生成标题 id）→ stringify。
  *
@@ -46,6 +47,8 @@ function codeBlock(node: Code): ElementContent {
 
 export const processor = unified()
   .use(remarkParse)
+  // 只认文档首部的 `---` 块（MD-09）：正文里的 `---` 依旧由 gfm 解析成水平线
+  .use(remarkFrontmatter, ['yaml'])
   .use(remarkGfm)
   .use(remarkMath)
   .use(remarkRehype, {
@@ -55,6 +58,13 @@ export const processor = unified()
       code: (_state, node) => codeBlock(node as Code),
       math: (_state, node) => renderMath((node as { value: string }).value, true),
       inlineMath: (_state, node) => renderMath((node as { value: string }).value, false),
+      // frontmatter 不能凭空消失（那是信息丢失），渲染成等宽块；白名单里 pre 放行 className
+      yaml: (_state, node) => ({
+        type: 'element',
+        tagName: 'pre',
+        properties: { className: ['frontmatter'] },
+        children: [{ type: 'text', value: (node as { value: string }).value }],
+      }),
     },
   })
   .use(rehypeRaw)

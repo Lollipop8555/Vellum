@@ -290,6 +290,9 @@
     "@ungap/structured-clone": {
       "./json": "esm/json.js"
     },
+    "dequal": {
+      "./lite": "lite/index.mjs"
+    },
     "dompurify": {
       "./purify.min.js": "dist/purify.min.js",
       "./purify.js": "dist/purify.js"
@@ -358,13 +361,21 @@
     }
   },
   "cjs": [
+    "@braintree/sanitize-url",
     "commander",
+    "cytoscape-cose-bilkent",
+    "cytoscape-fcose",
+    "dayjs",
     "dayjs/plugin/advancedFormat.js",
     "dayjs/plugin/customParseFormat.js",
     "dayjs/plugin/duration.js",
     "dayjs/plugin/isoWeek.js",
+    "debug",
     "elkjs/lib/elk.bundled.js",
     "extend",
-    "highlight.js/lib/core"
+    "format",
+    "highlight.js/lib/core",
+    "iconv-lite",
+    "rw"
   ]
 }
