@@ -2869,9 +2869,17 @@ function renderPreviewNow() {
   const body = el('previewBody')
   const seq = ++previewSeq
   const scrollTop = body.scrollTop
-  body.innerHTML = renderMarkdown(state.text)
-  if (!body.querySelector('.mermaid-block')) return
+  const text = state.text
   void (async () => {
+    const html = await renderMarkdown(text)
+    // 渲染是异步的：拿到结果时文档、面板或主题可能已经变了
+    if (seq !== previewSeq || !state.previewOpen || state.rightTab !== 'preview') return
+    body.innerHTML = html
+    // 先复原一次滚动位置（没有图表的文档就到此为止），
+    // 图表从占位换成 svg 会改变高度，渲染完再校正一次
+    if (seq !== previewSeq) return
+    body.scrollTop = scrollTop
+    if (!body.querySelector('.mermaid-block')) return
     // mermaid 体积大，只在文档里真有图表时才加载
     const { renderMermaidBlocks } = await import('../ui/mermaid')
     if (seq !== previewSeq || !state.previewOpen) return

@@ -24,7 +24,23 @@
       "w3c-keyname": ["./vendor/w3c-keyname"],
       "crelt": ["./vendor/crelt"],
       "monaco-editor": ["./vendor/monaco-editor"],
-      "monaco-editor/*": ["./vendor/monaco-editor/*"]
+      "monaco-editor/*": ["./vendor/monaco-editor/*"],
+      "unified": ["./vendor/unified"],
+      "remark-*": ["./vendor/remark-*"],
+      "rehype-*": ["./vendor/rehype-*"],
+      "mdast-util-*": ["./vendor/mdast-util-*"],
+      "micromark*": ["./vendor/micromark*"],
+      "hast-util-*": ["./vendor/hast-util-*"],
+      "unist-util-*": ["./vendor/unist-util-*"],
+      "vfile*": ["./vendor/vfile*"],
+      "katex": ["./vendor/katex"],
+      "katex/*": ["./vendor/katex/*"],
+      "lowlight": ["./vendor/lowlight"],
+      "highlight.js": ["./vendor/highlight.js"],
+      "highlight.js/*": ["./vendor/highlight.js/*"],
+      "mermaid": ["./vendor/mermaid"],
+      "property-information": ["./vendor/property-information"],
+      "parse5": ["./vendor/parse5"]
     }
   },
   "include": ["src", "vite.config.ts"]

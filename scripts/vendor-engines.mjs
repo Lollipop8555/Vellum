@@ -15,23 +15,143 @@
  */
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { collectCjsImports, collectSubpaths } from './vendor-manifest.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const NM = path.join(ROOT, 'node_modules')
 const VENDOR = path.join(ROOT, 'vendor')
 const MANIFEST = path.join(VENDOR, 'VERSIONS.json')
+const SRC = path.join(ROOT, 'src')
 
 /** 引擎根包；其余包沿 dependencies 递归收集（不限前缀，间接依赖同样不能留在 registry） */
-const ROOTS = ['codemirror', 'monaco-editor', 'style-mod', 'w3c-keyname', 'crelt']
+const ROOTS = [
+  // 编辑器引擎
+  'codemirror',
+  'monaco-editor',
+  'style-mod',
+  'w3c-keyname',
+  'crelt',
+  // 渲染引擎：Markdown 预览的 remark/rehype 管线 + 高亮 + 公式 + 图表
+  'unified',
+  'remark-parse',
+  'remark-gfm',
+  'remark-math',
+  'remark-frontmatter',
+  'remark-directive',
+  'remark-rehype',
+  'remark-cjk-friendly',
+  'rehype-raw',
+  'rehype-sanitize',
+  'rehype-slug',
+  'rehype-autolink-headings',
+  'rehype-highlight',
+  'rehype-stringify',
+  'katex',
+  'lowlight',
+  'highlight.js',
+  'mermaid',
+]
 const SCOPES = ['@codemirror/', '@lezer/', '@marijn/']
 const isEngine = (name) => ROOTS.includes(name) || SCOPES.some((s) => name.startsWith(s))
 
 /** Monaco 只保留运行时用到的 esm；dev/min/min-maps 是给 <script> 用的全量包 */
 const MONACO_KEEP = ['package.json', 'LICENSE', 'ThirdPartyNotices.txt']
+
+/**
+ * 大包的裁剪规则：(相对路径, 是否目录) => 是否保留。
+ * 目录必须返回 true，否则子树里的文件没机会被逐个判断。
+ *
+ * - mermaid: dist 有 122MB 且含 core / esm / esm.min 三套；
+ *   入口是 mermaid.core.mjs，其余两套与 map/docs 全部丢弃。
+ * - katex: fonts 每套 ttf/woff/woff2 三份，而 katex.min.css 只引用 woff2。
+ * - highlight.js: 入口是 es/，lib/ 是 CJS 副本，styles/ 由项目自己的 CSS 接管。
+ */
+const MERMAID_DENY_DIRS = new Set([
+  'dist/chunks/mermaid.esm',
+  'dist/chunks/mermaid.esm.min',
+  'dist/docs',
+  'dist/__mocks__',
+])
+
+const KEEP_RULES = {
+  mermaid: (rel, isDir) => {
+    if (isDir) return !MERMAID_DENY_DIRS.has(rel)
+    return (
+      rel === 'package.json' ||
+      rel === 'LICENSE' ||
+      rel === 'dist/mermaid.core.mjs' ||
+      rel.startsWith('dist/chunks/mermaid.core/') ||
+      rel.endsWith('.d.ts')
+    )
+  },
+  katex: (rel, isDir) => {
+    // 字体三种格式都要留：katex.min.css 同时声明 woff2/woff/ttf，
+    // 少一个就是构建期的未解析告警加运行期 404
+    if (isDir) return rel === 'dist' || rel === 'dist/fonts'
+    return (
+      rel === 'package.json' ||
+      rel === 'LICENSE' ||
+      rel === 'dist/katex.mjs' ||
+      rel === 'dist/katex.min.css' ||
+      rel.startsWith('dist/fonts/')
+    )
+  },
+  'highlight.js': (rel, isDir) => {
+    // lowlight 用 highlight.js/lib/core 与 lib/languages/*。
+    // lib/ 是完整可用的 CJS 版本，必须整棵保留（core/common 还是 CJS 入口）；
+    // es/languages/ 是语言表的 ESM 实现，供 subpaths 改道用（见 vendor-manifest.mjs），
+    // 而 es/core.js、es/common.js 只是 re-export lib/ 的壳子，没必要留。
+    if (isDir) {
+      return (
+        rel === 'lib' ||
+        rel === 'types' ||
+        rel === 'es' ||
+        rel === 'es/languages' ||
+        rel.startsWith('lib/') ||
+        rel.startsWith('types/') ||
+        rel.startsWith('es/languages/')
+      )
+    }
+    return (
+      rel === 'package.json' ||
+      rel === 'LICENSE' ||
+      rel.startsWith('lib/') ||
+      rel.startsWith('types/') ||
+      rel.startsWith('es/languages/')
+    )
+  },
+}
+
+/** 所有包通用排除：source map 与明显的非运行时代码（demo 目录曾占满 cytoscape-fcose 的 8.2MB） */
+const NON_RUNTIME_DIRS = new Set([
+  'demo',
+  'demos',
+  'examples',
+  'docs',
+  'test',
+  'tests',
+  '__tests__',
+  'playwright-tests',
+  'benchmark',
+  'coverage',
+  '.github',
+])
+
+const isJunk = (rel) => {
+  if (rel.endsWith('.map')) return true
+  return NON_RUNTIME_DIRS.has(rel.split('/')[0])
+}
+
+/** 裁剪后的必检文件：裁错一个就会在运行期直接报模块找不到 */
+const REQUIRED_FILES = {
+  mermaid: ['dist/mermaid.core.mjs'],
+  katex: ['dist/katex.mjs', 'dist/katex.min.css'],
+  'highlight.js': ['lib/core.js', 'lib/common.js', 'lib/languages/groovy.js', 'lib/languages/kotlin.js'],
+}
 
 const mode = process.argv.includes('--check')
   ? 'check'
@@ -69,10 +189,27 @@ async function collectFromNodeModules() {
     }
   }
 
+  // 扁平化提示：嵌套 node_modules 说明某依赖的版本区间与顶层不一致，
+  // 复制到 vendor 后会按顶层版本解析。这里只警告不阻断——
+  // 多数情况是 CLI 依赖（commander）或类型包，真正影响渲染的需要人工确认。
+  const nested = []
+  for (const [name, info] of found) {
+    const nestedDir = path.join(info.dir, 'node_modules')
+    if (!existsSync(nestedDir)) continue
+    const entries = (await readdir(nestedDir, { withFileTypes: true }))
+      // npm 会留下 .bin 与 .pkg-XXXX 形式的临时目录，不是真实依赖
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && e.name !== '@types')
+    if (entries.length) nested.push(`${name} → ${entries.map((e) => e.name).join(', ')}`)
+  }
+  if (nested.length) {
+    console.warn(
+      '注意：以下包带有嵌套依赖，vendor 里会按顶层版本解析，请确认不影响运行：\n  ' +
+        nested.join('\n  '),
+    )
+  }
+
   return found
 }
-
-/** 把 range 解析成具体版本，用于补全清单里尚未登记的间接依赖 */
 function resolveRange(name, range) {
   const out = execFileSync('npm', ['view', `${name}@${range || 'latest'}`, 'version', '--json'], {
     encoding: 'utf8',
@@ -147,10 +284,30 @@ async function copyPackage(name, from) {
     return
   }
 
+  const keep = KEEP_RULES[name]
+  if (keep) {
+    await cp(from, to, {
+      recursive: true,
+      filter: (src) => {
+        const rel = path.relative(from, src).split(path.sep).join('/')
+        if (!rel) return true
+        if (rel.split('/').includes('node_modules')) return false
+        if (isJunk(rel)) return false
+        return keep(rel, statSync(src).isDirectory())
+      },
+    })
+    return
+  }
+
   await cp(from, to, {
     recursive: true,
     // 包内嵌套的 node_modules 不属于源码；只按包内相对路径判断
-    filter: (src) => !path.relative(from, src).split(path.sep).includes('node_modules'),
+    filter: (src) => {
+      const parts = path.relative(from, src).split(path.sep)
+      if (!parts.join('')) return true
+      if (parts.includes('node_modules')) return false
+      return !isJunk(parts.join('/'))
+    },
   })
 }
 
@@ -212,9 +369,25 @@ async function check() {
         problems.push('monaco-editor: marked.js 仍带悬空 sourceMappingURL，请用 npm run vendor:pull 重新生成')
       }
     }
+    for (const file of REQUIRED_FILES[name] ?? []) {
+      if (!existsSync(path.join(dir, file))) {
+        problems.push(`${name}: 缺少 ${file}（KEEP 规则裁过头或同步未完成）`)
+      }
+    }
     // 依赖闭包必须自洽：缺一个就会在构建时回落到 node_modules 或直接报错
     for (const dep of Object.keys(pkg.dependencies ?? {})) {
       if (!names.has(dep)) problems.push(`${name}: 依赖 ${dep} 未纳入清单`)
+    }
+    // exports 子路径由 vite alias 直接映射，目标文件被裁掉就会在构建期 ENOENT
+    for (const [sub, target] of Object.entries(manifest.subpaths?.[name] ?? {})) {
+      const star = target.indexOf('*')
+      const head = target.slice(0, star)
+      const prefix =
+        star === -1 ? target : head.endsWith('/') ? head.slice(0, -1) : path.posix.dirname(head)
+      const probe = star === -1 ? target : `${prefix}/`
+      if (!existsSync(path.join(dir, probe))) {
+        problems.push(`${name}: 子路径 ${sub} 的目标 ${target} 缺失`)
+      }
     }
   }
 
@@ -254,13 +427,33 @@ if (mode === 'check') {
   }
 
   try {
-    await rm(VENDOR, { recursive: true, force: true })
+    try {
+      await rm(VENDOR, { recursive: true, force: true })
+    } catch (error) {
+      // 部分 IDE 会对大批量删除做二次确认保护（BULK_CONFIRM），
+      // 这类拦截无法在脚本内绕过，交给人工执行一次即可。
+      if (String(error?.message ?? error).includes('BULK_CONFIRM')) {
+        console.error('无法自动清空 vendor/（安全删除保护拦截）。请手动执行：rm -rf vendor 后重跑。')
+        process.exit(1)
+      }
+      throw error
+    }
 
     const versions = {}
+    const subpaths = {}
     for (const [name, info] of [...found].sort(([a], [b]) => a.localeCompare(b))) {
       await copyPackage(name, info.dir)
       versions[name] = info.version
+      // 必须按 vendor 里裁剪后的副本判断，node_modules 里的文件是全的，
+      // 拿它判断会把「已被裁掉、需要改道」的子路径漏掉
+      const map = await collectSubpaths(path.join(VENDOR, name), name)
+      if (map) subpaths[name] = map
     }
+
+    // 必须在 copyPackage 之后扫描：裁剪规则决定最终哪些文件还在，
+    // dev 预构建清单要按裁剪后的结果算，才不会指向被删掉的入口。
+    // src/ 也要一起扫：应用代码直接 import 的裸标识符同样需要预构建。
+    const cjs = await collectCjsImports(VENDOR, new Set(Object.keys(versions)), [VENDOR, SRC])
 
     await writeFile(
       MANIFEST,
@@ -268,6 +461,8 @@ if (mode === 'check') {
         {
           note: '由 npm run vendor / vendor:pull 生成，请勿手改；升级见 scripts/vendor-engines.mjs 顶部说明',
           packages: versions,
+          subpaths,
+          cjs,
         },
         null,
         2,

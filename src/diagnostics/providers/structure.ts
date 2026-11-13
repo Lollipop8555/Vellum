@@ -1,5 +1,6 @@
 import type { SyntaxNode, Tree } from '@lezer/common'
 import type { LangId } from '../../editors/languages'
+import { slugify } from '../../ui/md/slug'
 import { extOf } from '../registry'
 import type { Issue } from '../types'
 
@@ -138,16 +139,6 @@ function maskLines(lines: Line[]): boolean[] {
     }
   })
   return skip
-}
-
-/** GitHub 风格的锚点：小写、去标点、空格换连字符。用途只是「能不能对上」 */
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .trim()
-    .replace(/[`*_~[\](){}<>#!.,:;'"?!+=|\\/@^$%]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+$/, '')
 }
 
 const HEADING = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/
