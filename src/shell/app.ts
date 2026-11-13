@@ -2,6 +2,18 @@ import { applyStaticText, getLang, initLang, onLangChange, setLang, t } from '..
 import { CodeMirrorAdapter } from '../editors/codemirror'
 import type { EditorAdapter } from '../editors/adapter'
 import { activeIndex, extractOutline, type OutlineItem } from '../ui/outline'
+import { DIAG_VERSION, MAX_TEXT, analyze, contentHash } from '../diagnostics'
+import { dictFailed, ensureDict, onDictFailed, onDictReady } from '../diagnostics/dict'
+import { availabilityFor, dominantReason, enabledChecks, hasRunnable } from '../diagnostics/registry'
+import {
+  DEFAULT_CHECKS,
+  checksMask,
+  toRendered,
+  type CheckKind,
+  type ChecksSettings,
+  type Issue,
+} from '../diagnostics/types'
+import { renderIssues, type IssuesPhase } from '../ui/issues'
 import {
   ALL_LANGS,
   LANG_LABELS,
@@ -150,7 +162,8 @@ export interface AppState {
   rightTab: RightTab
 }
 
-export type RightTab = 'preview' | 'outline'
+/** 右侧容器同一时刻只显示一页；切换入口只有 rail（面板头不放页签） */
+export type RightTab = 'preview' | 'outline' | 'issues'
 
 export const state: AppState = {
   files: [],
@@ -191,6 +204,8 @@ export async function startApp() {
   applyTheme()
   applyStaticText()
   updateLangButton()
+  // 上次开着拼写检查：现在就把词典拉起来，别等用户再点一次
+  if (diagChecks().spell || diagChecks().spellIdent) watchDictReady()
 
   // 移动端的顶部标题栏 / 地址栏会吃掉一截高度，先按真实可见区域定高度基准；
   // 之后地址栏收放、软键盘弹起、横竖屏切换都会回调，编辑器必须按新容器重新 measure
@@ -339,14 +354,17 @@ function wireRails() {
 
   el('previewBtn').addEventListener('click', () => togglePanel('preview'))
   el('outlineBtn').addEventListener('click', () => togglePanel('outline'))
+  // 检查面板与预览/大纲共用一个容器，右竖条就是切换器（面板头里不再有页签）
+  el('issuesBtn').addEventListener('click', () => togglePanel('issues'))
+  el('issuesOptions').addEventListener('click', () => {
+    issuesOptionsOpen = !issuesOptionsOpen
+    renderIssuesPanel()
+  })
   el('transformsBtn').addEventListener('click', () => transformsDialog((id) => applyTransform(id)))
   el('statsBtn').addEventListener('click', () => showStats())
   el('diffBtn').addEventListener('click', () => void diffWithLatest())
   el('diffFileBtn').addEventListener('click', () => diffWithFile())
   el('toolsBtn').addEventListener('click', () => toolsDialog())
-  // 页签只切页不收起：点当前页把它关掉，是在跟用户的手指作对（收起是右上角 × 的事）
-  el('panelTabPreview').addEventListener('click', () => togglePanel('preview', true))
-  el('panelTabOutline').addEventListener('click', () => togglePanel('outline', true))
   el('outlineBody').addEventListener('click', (ev) => {
     const btn = (ev.target as HTMLElement).closest<HTMLElement>('.outline-item')
     if (!btn) return
@@ -663,6 +681,11 @@ function wireStatusbar() {
   })
   el('stEncoding').addEventListener('click', () => pickEncoding())
   el('stEol').addEventListener('click', () => void toggleEol())
+  // 徽标是这个功能唯一的常驻入口：任何「没结果」的状态都要能点进来
+  el('stDiag').addEventListener('click', () => {
+    if (!state.current) return
+    togglePanel('issues', true)
+  })
 }
 
 /**
@@ -1072,6 +1095,8 @@ async function mountEditor(text: string, offset = 0) {
       syncSizeBadge()
       schedulePreview()
       scheduleOutline()
+      // 检查挂在 app 层而不是面板上：面板关着也照跑（DG-07）
+      scheduleDiagnostics()
       scheduleAutosave()
       updateFormatButton()
       findBar?.refresh()
@@ -1102,6 +1127,8 @@ async function mountEditor(text: string, offset = 0) {
   sb.setCursor(1, 1)
   updateDirtyDot()
   updateEngineSeg()
+  // 换文件/换引擎/换语言都会走到这里：先试缓存，命中就秒出，否则排一次检查
+  void primeDiagnostics()
 }
 
 /**
@@ -1148,18 +1175,21 @@ function refreshMeta() {
   syncDocActions()
   syncSizeBadge()
   syncEncodingBadge()
+  // 换文件时先把徽标切到「没结果」，别让上一个文件的计数继续挂着
+  syncDiagBadge()
   if (!rec) {
     sb.setLanguage('—')
     return
   }
 }
 
-/** 右侧面板的两个入口：预览只对 Markdown 有意义，大纲任何文本文件都有 */
+/** 右侧面板的三个入口：预览只对 Markdown 有意义，大纲与检查任何文件都有 */
 function syncPanelButtons() {
   const rec = state.current
   const md = Boolean(rec) && currentLang() === 'markdown'
   el('previewBtn').hidden = !md
   el('outlineBtn').hidden = !rec
+  el('issuesBtn').hidden = !rec
   // 预览这一页在当前文件上不适用时，面板不收起、转到大纲：
   // 切个文件就把侧栏闪没，比留着它更烦
   if (state.rightTab === 'preview' && !md) state.rightTab = 'outline'
@@ -1167,19 +1197,21 @@ function syncPanelButtons() {
   if (state.previewOpen) renderActivePanel()
 }
 
-/** 面板头标签与竖条高亮的唯一真相源 */
+/** 面板标题与竖条高亮的唯一真相源；三个内容互斥显示 */
 function syncPanelChrome() {
-  const outline = state.rightTab === 'outline'
-  const md = Boolean(state.current) && currentLang() === 'markdown'
-  el('panelTabPreview').hidden = !md
-  el('panelTabPreview').classList.toggle('is-active', !outline)
-  el('panelTabOutline').classList.toggle('is-active', outline)
-  el('previewBody').hidden = outline
-  el('outlineBody').hidden = !outline
-  // 打印只对着渲染后的 Markdown 有意义
-  el('previewPrint').hidden = outline
-  el('previewBtn').classList.toggle('is-active', state.previewOpen && !outline)
-  el('outlineBtn').classList.toggle('is-active', state.previewOpen && outline)
+  const tab = state.rightTab
+  el('panelTitle').textContent = t(
+    tab === 'preview' ? 'panel.preview' : tab === 'outline' ? 'panel.outline' : 'panel.issues',
+  )
+  el('previewBody').hidden = tab !== 'preview'
+  el('outlineBody').hidden = tab !== 'outline'
+  el('issuesBody').hidden = tab !== 'issues'
+  // 打印只对着渲染后的 Markdown 有意义；选项开关只在检查页有意义
+  el('previewPrint').hidden = tab !== 'preview'
+  el('issuesOptions').hidden = tab !== 'issues' || !state.current
+  el('previewBtn').classList.toggle('is-active', state.previewOpen && tab === 'preview')
+  el('outlineBtn').classList.toggle('is-active', state.previewOpen && tab === 'outline')
+  el('issuesBtn').classList.toggle('is-active', state.previewOpen && tab === 'issues')
 }
 
 function closePanel() {
@@ -2790,11 +2822,15 @@ function togglePanel(tab: RightTab, force?: boolean) {
   requestAnimationFrame(() => state.editor?.layout())
 }
 
-/** 面板只有一页是可见的，切换/刷新都从这里走，免得两页抢着写 DOM */
+/** 面板只有一页是可见的，切换/刷新都从这里走，免得几页抢着写 DOM */
 function renderActivePanel() {
   if (!state.previewOpen) return
   if (state.rightTab === 'outline') {
     renderOutlineNow()
+    return
+  }
+  if (state.rightTab === 'issues') {
+    renderIssuesPanel()
     return
   }
   if (currentLang() === 'markdown') renderPreviewNow()
@@ -2836,6 +2872,302 @@ function schedulePreview() {
   if (!state.previewOpen || state.rightTab !== 'preview') return
   window.clearTimeout(previewTimer)
   previewTimer = window.setTimeout(renderPreviewNow, 250)
+}
+
+/* -------------------------------------------------------------- 代码检查 */
+
+/**
+ * 调度器（plans/diagnostics.md §7.4）。
+ *
+ * 关键约束：这里挂在 app 层，**不**挂在面板上。面板只决定画不画，
+ * 计算照常进行——否则「面板关了就偷偷不检查」是必然出的事故。
+ */
+
+interface DiagCache {
+  key: string
+  issues: Issue[]
+}
+
+let diagIssues: Issue[] = []
+/** 当前结果对应的缓存键；内容一变就过期，但旧结果继续显示不清空 */
+let diagKey = ''
+/** 至少有一项检查跑过。false + 0 条 = 「没查」，不是「干净」 */
+let diagRan = false
+let diagTimer = 0
+/** 递增即作废上一轮结果：编辑中跑完的旧结果不许覆盖新结果 */
+let diagSeq = 0
+/** 排入队列或正在计算：状态栏据此切 loading */
+let diagBusy = false
+let issuesOptionsOpen = false
+
+const DIAG_DEBOUNCE = 600
+
+function diagChecks(): ChecksSettings {
+  return { ...DEFAULT_CHECKS, ...getSettings().checks }
+}
+
+/** 用户自己加的「忽略的单词」，只给拼写两项用 */
+function diagIgnore(): string[] {
+  const list = getSettings().spellIgnore
+  return Array.isArray(list) ? list : []
+}
+
+function diagKeyFor(text: string, lang: LangId, name: string, checks: ChecksSettings): string {
+  // 忽略词变了结果也会变，必须进 key，否则改完设置面板还挂旧波浪线
+  const ignore = diagIgnore()
+  const ignoreTag = ignore.length > 0 ? contentHash(ignore.join(',')) : ''
+  return `${DIAG_VERSION}|${contentHash(text)}|${lang}|${name}|${checksMask(checks)}|${ignoreTag}`
+}
+
+function isSpellCheck(id: CheckKind): boolean {
+  return id === 'spell' || id === 'spellIdent'
+}
+
+/** 只有真的要查拼写时才拉词典；拉好之后重跑一次（此前的空结果不算数） */
+let dictWatched = false
+function watchDictReady(): void {
+  ensureDict()
+  if (dictWatched) return
+  dictWatched = true
+  onDictReady(() => {
+    diagKey = ''
+    scheduleDiagnostics(0)
+  })
+  // 失败时不重跑（没结果可出），但面板要把空态从「无问题」改成「词典不可用」
+  onDictFailed(() => {
+    if (state.previewOpen && state.rightTab === 'issues') renderIssuesPanel()
+  })
+}
+
+/** 偏移 → 行号。只在点击跳转时用一次，不值得为它建索引 */
+function lineOfOffset(text: string, offset: number): number {
+  let line = 1
+  const end = Math.min(Math.max(offset, 0), text.length)
+  for (let i = 0; i < end; i++) if (text.charCodeAt(i) === 10) line++
+  return line
+}
+
+/**
+ * 打开文件后先查缓存，命中就秒出（DG-09）。
+ * 与内容一起存的还有规则版本、语言、勾选项：任一项变了都必须重跑，
+ * 否则用户会看到「旧规则的结果」，那比看到空白更容易被当成 bug。
+ */
+async function primeDiagnostics(): Promise<void> {
+  const seq = ++diagSeq
+  window.clearTimeout(diagTimer)
+  diagIssues = []
+  diagRan = false
+  diagKey = ''
+  diagBusy = false
+
+  const rec = state.current
+  if (!rec) {
+    state.editor?.setIssues([])
+    syncDiagBadge()
+    return
+  }
+
+  const text = state.text
+  const key = diagKeyFor(text, currentLang(), rec.name, diagChecks())
+  syncDiagBadge()
+
+  let cached: DiagCache | undefined
+  try {
+    cached = await store.getMeta<DiagCache>(`diag:${rec.id}`)
+  } catch {
+    cached = undefined
+  }
+  // 等 DB 的这几毫秒里可能已经切了文件、或者又挂了一次编辑器
+  if (seq !== diagSeq || state.current?.id !== rec.id) return
+
+  if (cached && cached.key === key) {
+    diagIssues = cached.issues
+    diagRan = true
+    diagKey = key
+    applyDiagnostics()
+    return
+  }
+  scheduleDiagnostics(0)
+}
+
+/** 内容/配置变了：重排一次检查。`delay` 只给「刚打开」这类可以立刻跑的场合用 0 */
+function scheduleDiagnostics(delay = DIAG_DEBOUNCE): void {
+  window.clearTimeout(diagTimer)
+  if (!state.current) {
+    diagBusy = false
+    syncDiagBadge()
+    return
+  }
+  // pending 阶段就切 loading：从按下键到出结果之间必须看得出「在做事」
+  diagBusy = true
+  syncDiagBadge()
+  diagTimer = window.setTimeout(() => runDiagnostics(), delay)
+}
+
+function runDiagnostics(): void {
+  const rec = state.current
+  if (!rec) return
+
+  const text = state.text
+  const lang = currentLang()
+  const checks = diagChecks()
+  const key = diagKeyFor(text, lang, rec.name, checks)
+
+  // 内容没变（例如只是切了只读）就别白扫一遍
+  if (key === diagKey) {
+    diagBusy = false
+    syncDiagBadge()
+    return
+  }
+
+  const seq = ++diagSeq
+  diagBusy = true
+  syncDiagBadge()
+
+  const commit = () => {
+    if (seq !== diagSeq) return
+    const result = analyze({ text, lang, name: rec.name, checks, ignore: diagIgnore() })
+    // 算的过程中又改了/又切了文件：这一份已经过期，丢掉
+    if (seq !== diagSeq || state.current?.id !== rec.id) return
+    diagIssues = result.issues
+    diagRan = result.ran
+    diagKey = key
+    diagBusy = false
+    applyDiagnostics()
+    void store.setMeta(`diag:${rec.id}`, { key, issues: result.issues } as DiagCache)
+  }
+
+  // 几十 KB 以上让出一帧再算，别和输入抢同一个任务
+  if (text.length > 64 * 1024) window.setTimeout(commit, 0)
+  else commit()
+}
+
+/** 结果落地：编辑器波浪线 + 状态栏 + 面板（面板只在看得见时才画） */
+function applyDiagnostics(): void {
+  state.editor?.setIssues(toRendered(diagIssues))
+  syncDiagBadge()
+  if (state.previewOpen && state.rightTab === 'issues') renderIssuesPanel()
+}
+
+/**
+ * 状态栏徽标。六种「没结果」必须分开表达（DG-08）：
+ * 全关 / 语言不支持 / 文件太大 / 正在跑，混成一句「无问题」就没人再信它了。
+ */
+function syncDiagBadge(): void {
+  const rec = state.current
+  if (!rec) {
+    sb.setDiagnostics('idle')
+    return
+  }
+
+  let errors = 0
+  let warnings = 0
+  for (const issue of diagIssues) {
+    if (issue.severity === 'error') errors++
+    else warnings++
+  }
+
+  if (state.text.length > MAX_TEXT) {
+    sb.setDiagnostics('big', errors, warnings, formatBytes(MAX_TEXT))
+    return
+  }
+
+  const checks = diagChecks()
+  const lang = currentLang()
+  if (enabledChecks(checks).length === 0) {
+    sb.setDiagnostics('off')
+    return
+  }
+  // 「一项都跑不了」= 无检查。注意这一步必须在 running 之前：
+  // 否则一个永远跑不完的转圈会让人以为还在算
+  if (!hasRunnable(checks, lang, rec.name)) {
+    sb.setDiagnostics('na')
+    return
+  }
+
+  if (diagBusy || !diagRan) {
+    // 转圈，但上一次的计数压暗留着，比整块清空更像「正在更新」
+    sb.setDiagnostics('running', errors, warnings)
+    return
+  }
+  sb.setDiagnostics(errors > 0 || warnings > 0 ? 'ok' : 'clean', errors, warnings)
+}
+
+function renderIssuesPanel(): void {
+  const rec = state.current
+  const checks = diagChecks()
+  const lang = currentLang()
+  const availability = availabilityFor(lang, rec?.name ?? '')
+  const enabled = enabledChecks(checks)
+
+  let phase: IssuesPhase = 'idle'
+  if (!rec) phase = 'na'
+  else if (state.text.length > MAX_TEXT) phase = 'big'
+  else if (enabled.length === 0) phase = 'off'
+  else if (!hasRunnable(checks, lang, rec.name)) phase = 'na'
+  else if (diagBusy || !diagRan) phase = 'running'
+
+  renderIssues(
+    el('issuesBody'),
+    {
+      phase,
+      issues: diagIssues,
+      stale: diagBusy && diagIssues.length > 0,
+      checks,
+      optionsOpen: issuesOptionsOpen,
+      text: state.text,
+      bigLimit: formatBytes(MAX_TEXT),
+      availability,
+      naReason: rec && phase === 'na' ? dominantReason(checks, lang, rec.name) : null,
+      spellIgnore: diagIgnore(),
+      dictFailed: dictFailed(),
+      lang,
+    },
+    {
+      onToggleCheck: (id: CheckKind) => {
+        const next: ChecksSettings = { ...checks, [id]: !checks[id] }
+        updateSettings({ checks: next })
+        // 刚打开拼写：这时候才去下载词典（不打开就永远不下载）
+        if (isSpellCheck(id) && next[id]) watchDictReady()
+        // 勾选变了，旧结果立刻作废：不能让已经关掉的检查继续挂着波浪线
+        diagKey = ''
+        diagIssues = []
+        diagRan = false
+        state.editor?.setIssues([])
+        scheduleDiagnostics(0)
+        renderIssuesPanel()
+      },
+      onJump: (issue: Issue) => {
+        state.editor?.goToLine(lineOfOffset(state.text, issue.from))
+        state.editor?.focus()
+      },
+      onRerun: () => {
+        diagKey = ''
+        scheduleDiagnostics(0)
+        renderIssuesPanel()
+      },
+      onSpellIgnoreChange: (raw: string) => {
+        updateSettings({ spellIgnore: parseIgnoreWords(raw) })
+        // 词表变了结果就变了：作废旧结果，重跑一次
+        diagKey = ''
+        diagIssues = []
+        diagRan = false
+        state.editor?.setIssues([])
+        scheduleDiagnostics(0)
+        renderIssuesPanel()
+      },
+    },
+  )
+}
+
+/** 「忽略的单词」：逗号/空格/顿号分隔都认，统一小写去重 */
+function parseIgnoreWords(raw: string): string[] {
+  const seen = new Set<string>()
+  for (const piece of raw.split(/[\s,，、;；]+/)) {
+    const word = piece.trim().toLowerCase()
+    if (word) seen.add(word)
+  }
+  return [...seen]
 }
 
 /* ---------------------------------------------------------------- 大纲 */

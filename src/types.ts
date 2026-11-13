@@ -1,4 +1,5 @@
 import type { LangId } from './editors/lang-registry'
+import { DEFAULT_CHECKS, type ChecksSettings } from './diagnostics/types'
 
 export type EngineId = 'cm' | 'monaco'
 
@@ -119,6 +120,10 @@ export interface Settings {
   panelWidth: number
   /** 左侧抽屉宽度，单位 px；层级深的目录树靠它撑开 */
   drawerWidth: number
+  /** 代码检查的勾选项，全局偏好，与文件无关 */
+  checks: ChecksSettings
+  /** 拼写检查的「忽略的单词」，小写存；只影响 spell / spellIdent */
+  spellIgnore: string[]
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -130,4 +135,6 @@ export const DEFAULT_SETTINGS: Settings = {
   wordWrap: false,
   panelWidth: 440,
   drawerWidth: 264,
+  checks: { ...DEFAULT_CHECKS },
+  spellIgnore: [],
 }

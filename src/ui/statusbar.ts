@@ -154,6 +154,86 @@ export function setLight(v: boolean) {
   $('stLight').hidden = !v
 }
 
+/**
+ * 代码检查徽标（plans/diagnostics.md §8.2）。
+ *
+ * 六种「没结果」的处境必须用文案区分：用户全关了（off）、这语言查不了（na）、
+ * 文件太大跳过了（big）、以及真的干净（clean）。全显示成「无问题」比不显示更糟。
+ * 有文件打开时徽标永不隐藏——它是这个功能唯一的入口。
+ */
+export type DiagState = 'idle' | 'running' | 'ok' | 'clean' | 'off' | 'na' | 'big'
+
+/**
+ * 计数用「彩色圆点 + 数字」，不用 ✕ / △ 这类字符：
+ * 它们的字形高度、粗细、基线随字体变，压在 10.5px 的状态栏里更像噪点而不是图标。
+ */
+function diagCounts(errors: number, warnings: number): string {
+  const parts: string[] = []
+  if (errors > 0) {
+    parts.push(`<span class="diag-item diag-item-err"><i class="diag-dot"></i><b>${errors}</b></span>`)
+  }
+  if (warnings > 0) {
+    parts.push(`<span class="diag-item diag-item-warn"><i class="diag-dot"></i><b>${warnings}</b></span>`)
+  }
+  return parts.join('')
+}
+
+export function setDiagnostics(
+  state: DiagState,
+  errors = 0,
+  warnings = 0,
+  bigSize = '',
+) {
+  const chip = $('stDiag')
+  chip.hidden = state === 'idle'
+  if (state === 'idle') return
+
+  chip.classList.toggle('is-off', state === 'off' || state === 'na' || state === 'big')
+  chip.classList.toggle('is-clean', state === 'clean')
+  chip.classList.toggle('is-bad', state === 'ok' && errors > 0)
+  chip.classList.toggle('is-running', state === 'running')
+
+  if (state === 'running') {
+    // 上一次的计数压暗留着，比整块清空更容易看出「正在更新」
+    const counts = diagCounts(errors, warnings)
+    chip.innerHTML = `<span class="diag-spin" aria-hidden="true"></span>${
+      counts ? `<span class="diag-ghost">${counts}</span>` : ''
+    }`
+    chip.title = t('status.diagRunning')
+    return
+  }
+
+  if (state === 'off' || state === 'na' || state === 'big') {
+    const label =
+      state === 'off'
+        ? t('status.diagOff')
+        : state === 'na'
+          ? t('status.diagNa')
+          : t('status.diagBig')
+    chip.textContent = label
+    chip.title = t(
+      state === 'off'
+        ? 'status.diagOffHint'
+        : state === 'na'
+          ? 'status.diagNaHint'
+          : 'status.diagBigHint',
+      { size: bigSize },
+    )
+    return
+  }
+
+  if (errors === 0 && warnings === 0) {
+    // 和计数态同一套视觉：一颗绿点 + 文案，而不是突然退回纯文字
+    chip.innerHTML = `<i class="diag-dot"></i><span>${t('status.diagClean')}</span>`
+    chip.title = t('status.diagHint')
+    return
+  }
+
+  chip.innerHTML = diagCounts(errors, warnings)
+  chip.title = `${t('status.diagErrors', { n: errors })} · ${t('status.diagWarnings', { n: warnings })}`
+  chip.title += `\n${t('status.diagHint')}`
+}
+
 /** on：正在上色；off：用户关掉了；na：这文件没语法可挂（纯文本），开关没有意义 */
 export type HighlightState = 'on' | 'off' | 'na'
 

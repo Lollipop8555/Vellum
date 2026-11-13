@@ -4,6 +4,7 @@ import 'monaco-editor/esm/vs/basic-languages/monaco.contribution'
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import type { EditorAdapter, EditorOptions, SearchApi } from './adapter'
 import { monacoLanguage, monoSupports, scanLogcatLine, type LangId } from './languages'
+import type { RenderedIssue } from '../diagnostics/types'
 import { cssVar } from '../ui/theme'
 
 // 只提供 editor worker；TS/JSON 语言服务不参与打包，避免 worker 协议错配
@@ -134,6 +135,10 @@ function defineThemes() {
       'editor.inactiveSelectionBackground': cssVar('--c-sel'),
       'editor.lineHighlightBackground': '#00000000',
       'editorIndentGuide.background1': cssVar('--c-border-soft'),
+      'editorError.foreground': cssVar('--c-danger'),
+      'editorWarning.foreground': cssVar('--syn-num'),
+      'editorOverviewRuler.errorForeground': cssVar('--c-danger'),
+      'editorOverviewRuler.warningForeground': cssVar('--syn-num'),
       'editorWidget.background': cssVar('--c-island-2'),
       'editorWidget.border': cssVar('--c-border'),
       'input.background': cssVar('--c-island'),
@@ -164,6 +169,10 @@ function defineThemes() {
       'editorLineNumber.activeForeground': cssVar('--c-text'),
       'editorCursor.foreground': cssVar('--c-accent'),
       'editor.selectionBackground': cssVar('--c-sel'),
+      'editorError.foreground': cssVar('--c-danger'),
+      'editorWarning.foreground': cssVar('--syn-num'),
+      'editorOverviewRuler.errorForeground': cssVar('--c-danger'),
+      'editorOverviewRuler.warningForeground': cssVar('--syn-num'),
       'editor.lineHighlightBackground': '#00000000',
       'editorWidget.background': cssVar('--c-island-2'),
       'editorWidget.border': cssVar('--c-border'),
@@ -225,7 +234,8 @@ export class MonacoAdapter implements EditorAdapter {
       guides: { indentation: false },
       folding: !tokens,
       lineNumbers: 'on',
-      glyphMargin: false,
+      // 检查结果要落在行号区，没有 glyph 边距就只剩波浪线，位置感差很多
+      glyphMargin: true,
       padding: { top: 10, bottom: 24 },
       scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10, useShadows: false },
       largeFileOptimizations: !tokens,
@@ -320,6 +330,32 @@ export class MonacoAdapter implements EditorAdapter {
     this.editor.revealLineInCenter(line)
     this.editor.setPosition({ lineNumber: line, column: 1 })
     this.editor.focus()
+  }
+
+  setIssues(issues: RenderedIssue[]): void {
+    const model = this.model
+    if (!model) return
+    const length = model.getValueLength()
+    const markers: monaco.editor.IMarkerData[] = []
+    for (const issue of issues) {
+      const from = Math.max(0, Math.min(issue.from, length))
+      const to = Math.max(from, Math.min(issue.to, length))
+      const start = model.getPositionAt(from)
+      const end = model.getPositionAt(to)
+      markers.push({
+        startLineNumber: start.lineNumber,
+        startColumn: start.column,
+        endLineNumber: end.lineNumber,
+        endColumn: end.column,
+        message: issue.message,
+        severity:
+          issue.severity === 'error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning,
+        source: 'vellum',
+      })
+    }
+    // 只给当前语言服务未接管的模型打标记：本项目的 JSON 是自建 Monarch 着色，
+    // 没有 json worker，不会和语言服务的 marker 打架
+    monaco.editor.setModelMarkers(model, 'vellum', markers)
   }
 
   openSearch(): void {

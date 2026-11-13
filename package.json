@@ -10,12 +10,14 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && npm run vendor:check && vite build",
+    "build": "tsc --noEmit && npm run vendor:check && npm run dict:check && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "vendor": "node scripts/vendor-engines.mjs",
     "vendor:pull": "node scripts/vendor-engines.mjs --pull",
-    "vendor:check": "node scripts/vendor-engines.mjs --check"
+    "vendor:check": "node scripts/vendor-engines.mjs --check",
+    "dict": "node scripts/vendor-dict.mjs",
+    "dict:check": "node scripts/vendor-dict.mjs --check"
   },
   "dependencies": {
     "fflate": "^0.8.3",

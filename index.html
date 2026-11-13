@@ -476,10 +476,7 @@
             tabindex="0"
           ></div>
           <div class="panel-head">
-            <div class="panel-tabs" role="tablist">
-              <button class="panel-tab is-active" id="panelTabPreview" role="tab" data-i18n="panel.preview"></button>
-              <button class="panel-tab" id="panelTabOutline" role="tab" data-i18n="panel.outline"></button>
-            </div>
+            <div class="panel-title" id="panelTitle"></div>
             <div class="spacer"></div>
             <button class="btn btn-ghost icon-only" id="previewPrint" data-i18n-title="action.print">
               <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -494,6 +491,17 @@
                 <rect x="6.4" y="11.4" width="7.2" height="5.2" rx="0.9" fill="none" stroke="currentColor" stroke-width="1.3" />
               </svg>
             </button>
+            <button class="btn btn-ghost icon-only" id="issuesOptions" data-i18n-title="issues.optionsTip" hidden>
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path
+                  d="M3.4 5.6h1.4M3.4 10h1.4M3.4 14.4h1.4M7.4 5.6h9.2M7.4 10h9.2M7.4 14.4h9.2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
             <button class="btn btn-ghost icon-only" id="previewClose" data-i18n-title="action.close">
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M5.6 5.6l8.8 8.8M14.4 5.6l-8.8 8.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
@@ -502,6 +510,7 @@
           </div>
           <div class="markdown-body" id="previewBody"></div>
           <div class="outline-body" id="outlineBody" hidden></div>
+          <div class="issues-body" id="issuesBody" hidden></div>
         </aside>
 
         <!-- 右竖条 -->
@@ -515,6 +524,13 @@
           <button class="rail-btn" id="outlineBtn" data-i18n-title="rail.outline" data-doc-action hidden>
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <path d="M3.4 5.2h1.2M7 5.2h9.6M3.4 10h1.2M7 10h9.6M3.4 14.8h1.2M7 14.8h9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button class="rail-btn" id="issuesBtn" data-i18n-title="rail.issues" data-doc-action hidden>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M10 3.2l6.4 11.4a1 1 0 0 1-.9 1.5H4.5a1 1 0 0 1-.9-1.5L10 3.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+              <path d="M10 8.2v3.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              <circle cx="10" cy="13.7" r="0.85" fill="currentColor" />
             </svg>
           </button>
           <button
@@ -615,6 +631,7 @@
         <span class="st" id="stCache"></span>
         <span class="st-sep"></span>
         <span class="st st-engine" id="stEngine"></span>
+        <span class="st-badge clickable st-diag" id="stDiag" hidden></span>
         <span class="st-badge clickable" id="stHighlight" hidden></span>
         <span class="st-badge" id="stLight" hidden data-i18n="status.light"></span>
         <span class="st-badge" id="stReadonly" hidden></span>

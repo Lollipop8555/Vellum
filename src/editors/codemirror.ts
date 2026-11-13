@@ -31,8 +31,10 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language'
 import { closeBrackets, autocompletion, closeBracketsKeymap } from '@codemirror/autocomplete'
+import { lintGutter, setDiagnostics } from '@codemirror/lint'
 import { Tag, tags } from '@lezer/highlight'
 import type { EditorAdapter, EditorOptions, SearchApi } from './adapter'
+import type { RenderedIssue } from '../diagnostics/types'
 import {
   cmLanguageAsync,
   cmLanguageSync,
@@ -107,6 +109,19 @@ const vellumTheme = EditorView.theme({
     backgroundColor: 'var(--c-accent-weak)',
     color: 'var(--c-text)',
   },
+  // 检查结果：波浪线用 text-decoration 而不是 lint 默认的 SVG 下划线，
+  // 这样颜色能直接吃 CSS 变量，跟随主题与强调色开关
+  '.cm-lintRange': {
+    backgroundImage: 'none',
+    textDecorationLine: 'underline',
+    textDecorationStyle: 'wavy',
+    textDecorationSkipInk: 'none',
+    textUnderlineOffset: '2px',
+    paddingBottom: '0',
+  },
+  '.cm-lintRange-error': { textDecorationColor: 'var(--c-danger)' },
+  '.cm-lintRange-warning': { textDecorationColor: 'var(--syn-num)' },
+  '.cm-lintRange-active': { backgroundColor: 'var(--c-accent-weak)' },
 })
 
 /* ---------------- logcat ---------------- */
@@ -259,6 +274,9 @@ export class CodeMirrorAdapter implements EditorAdapter {
         highlightSpecialChars(),
         history(),
         foldGutter(),
+        // 只负责画（行号区标记 + 悬停消息）；诊断数据由 setIssues 推进来，
+        // setDiagnostics 会在需要时自动补上 lint 的状态字段
+        lintGutter(),
         drawSelection(),
         dropCursor(),
         EditorState.allowMultipleSelections.of(true),
@@ -413,6 +431,22 @@ export class CodeMirrorAdapter implements EditorAdapter {
 
   openSearch(): void {
     this.opts?.onFind?.(false)
+  }
+
+  setIssues(issues: RenderedIssue[]): void {
+    const view = this.view
+    if (!view) return
+    const length = view.state.doc.length
+    const diagnostics = issues
+      .map((issue) => ({
+        from: Math.max(0, Math.min(issue.from, length)),
+        to: Math.max(0, Math.min(issue.to, length)),
+        severity: issue.severity,
+        message: issue.message,
+        source: 'vellum',
+      }))
+      .filter((d) => d.to > d.from)
+    view.dispatch(setDiagnostics(view.state, diagnostics))
   }
 
   searchApi(): SearchApi {

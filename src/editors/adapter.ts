@@ -1,4 +1,5 @@
 import type { LangId } from './languages'
+import type { RenderedIssue } from '../diagnostics/types'
 
 export interface EditorOptions {
   value: string
@@ -48,6 +49,8 @@ export interface EditorAdapter {
   /** 主题色取自 CSS 变量（如强调色开关），同名主题也要重读 */
   refreshTheme(): void
   goToLine(n: number): void
+  /** 语法检查结果。空数组即清空；判断"该不该报"不归适配器管 */
+  setIssues(issues: RenderedIssue[]): void
   openSearch(): void
   searchApi(): SearchApi
   focus(): void

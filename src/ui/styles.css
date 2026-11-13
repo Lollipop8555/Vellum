@@ -48,6 +48,8 @@
   --c-accent-weak: rgba(91, 140, 255, 0.16);
   --c-sel: rgba(91, 140, 255, 0.22);
   --c-danger: #e5534b;
+  /* 「一切正常」：与 danger 成对。别拿 --syn-str 顶替，那是语法着色，语义不同 */
+  --c-ok: #57ab73;
   /* 配额预警（§16：>80% 变黄）比 danger 轻一档 */
   --c-warn: #d9a05b;
   --c-add: rgba(77, 158, 106, 0.16);
@@ -89,6 +91,7 @@
   --c-accent-weak: rgba(58, 104, 216, 0.12);
   --c-sel: rgba(58, 104, 216, 0.16);
   --c-danger: #c8372f;
+  --c-ok: #2f7d3a;
   --c-warn: #a96c00;
   --c-add: rgba(46, 140, 82, 0.14);
   --c-del: rgba(200, 55, 47, 0.1);
@@ -1305,34 +1308,17 @@ body.is-resizing {
   scrollbar-gutter: stable;
 }
 
-/* 面板头的页签：贴着内容，比竖条上的图标更容易对应上 */
-.panel-tabs {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+/**
+ * 面板头只放标题，不放页签：切换入口统一由右竖条承担（和左侧抽屉一致）。
+ * 两套入口并存时，用户会分不清哪个才是"当前内容"。
+ */
+.panel-title {
   min-width: 0;
-}
-
-.panel-tab {
-  padding: 3px 8px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--c-dim);
-  font: inherit;
+  overflow: hidden;
+  color: var(--c-text);
   font-size: 12px;
-  cursor: pointer;
   white-space: nowrap;
-}
-
-.panel-tab:hover {
-  color: var(--c-text);
-  background: var(--c-island-2);
-}
-
-.panel-tab.is-active {
-  color: var(--c-text);
-  background: var(--c-island-2);
+  text-overflow: ellipsis;
 }
 
 /* ---------------- 大纲 ---------------- */
@@ -2208,4 +2194,379 @@ textarea.raw {
 .monaco-find-active {
   background: var(--c-find-active);
   border-radius: 2px;
+}
+
+/* ---------------- 代码检查（plans/diagnostics.md §8） ---------------- */
+
+.issues-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 6px 24px;
+  scrollbar-gutter: stable;
+}
+
+/* 选项区：仿左侧搜索面板的「深度搜索」，展开后压在列表上方而不是浮层 */
+.issues-options {
+  margin-bottom: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--c-border-soft);
+}
+
+.issues-check-group {
+  margin-bottom: 4px;
+}
+
+.issues-check-title {
+  padding: 5px 6px 2px;
+  color: var(--c-faint);
+  font-size: 11px;
+}
+
+.issues-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--c-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.issues-check:hover {
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+.issues-check input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--c-accent);
+}
+
+.issues-check-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 置灰项行内的原因：只说三四个字，完整解释在 title 上 */
+.issues-check-why {
+  flex: none;
+  color: var(--c-faint);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* 还没实现的检查项：置灰但保留可见，别让人以为功能不存在 */
+.issues-check.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.issues-check.is-disabled:hover {
+  background: none;
+  color: var(--c-dim);
+}
+
+/* 拼写「忽略的单词」输入框 */
+.issues-check-input {
+  display: block;
+  width: calc(100% - 12px);
+  margin: 2px 6px 0;
+  padding: 3px 6px;
+  border: 1px solid var(--c-border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--c-island-2);
+  color: var(--c-text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.issues-check-input::placeholder {
+  color: var(--c-faint);
+}
+
+.issues-check-input:focus {
+  border-color: var(--c-accent);
+  outline: none;
+}
+
+.issues-actions {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0 0 6px;
+}
+
+/* ---------- 语言支持矩阵（弹窗） ---------- */
+
+.support-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.support-legend {
+  color: var(--c-dim);
+  font-size: 12px;
+}
+
+.support-scroll {
+  overflow: auto;
+  max-height: min(64vh, 560px);
+  border: 1px solid var(--c-border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.support-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.support-table th,
+.support-table td {
+  padding: 3px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.support-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--c-island-2);
+  border-bottom: 1px solid var(--c-border);
+  color: var(--c-dim);
+  font-weight: 550;
+}
+
+/* 语言名把住左边：横向滚动时不能跟着跑掉 */
+.support-table .support-lang {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 160px;
+  min-width: 160px;
+  text-align: left;
+  background: var(--c-island);
+}
+
+.support-table thead .support-lang {
+  z-index: 2;
+  background: var(--c-island-2);
+}
+
+.support-table tbody tr:hover td {
+  background: var(--c-island-2);
+}
+
+/* 当前文件的语言：整行染色 + 名字后面挂个标签，110 行里最先被看到 */
+.support-table tr.is-here td,
+.support-table tr.is-here:hover td,
+.support-table tr.is-here .support-lang {
+  background: color-mix(in srgb, var(--c-accent) 14%, var(--c-island));
+}
+
+.support-table tr.is-here .support-lang-label {
+  color: var(--c-text);
+  font-weight: 550;
+}
+
+.support-lang-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--c-accent) 22%, transparent);
+  color: var(--c-accent);
+  font-size: 10px;
+}
+
+.support-cell.is-yes {
+  color: var(--c-ok);
+}
+
+/* 不支持用 ×，别用「—」：这个表就是在问「有没有」，符号要能一眼辨形 */
+.support-cell.is-no {
+  color: var(--c-faint);
+}
+
+.issues-stale {
+  padding: 2px 6px 6px;
+  color: var(--c-warn);
+  font-size: 11px;
+}
+
+.issues-empty {
+  padding: 26px 14px;
+  color: var(--c-dim);
+  font-size: 12px;
+  text-align: center;
+}
+
+.issues-empty-title {
+  margin-bottom: 5px;
+  color: var(--c-text);
+}
+
+.issues-empty-hint {
+  color: var(--c-faint);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.issues-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.issues-group {
+  padding: 9px 6px 3px;
+  color: var(--c-faint);
+  font-size: 11px;
+}
+
+.issue-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--c-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.issue-item:hover {
+  background: var(--c-island-2);
+}
+
+/* 圆点按基线对齐会偏高，往回收一格 */
+.issue-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translateY(-2px);
+}
+
+.issue-item-error .issue-dot {
+  background: var(--c-danger);
+}
+
+.issue-item-warning .issue-dot {
+  background: var(--syn-num);
+}
+
+.issue-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.issue-loc {
+  flex: none;
+  color: var(--c-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.issues-truncated {
+  padding: 8px 6px;
+  color: var(--c-faint);
+  font-size: 11px;
+}
+
+/* ---------- 状态栏检查徽标 ---------- */
+
+/* 三种状态（计数/干净/检查中）的内部结构不同，行高统一钉住，
+   否则切换状态时徽标高度会差 1~3px，状态栏跟着跳一下 */
+.st-diag {
+  line-height: 1.4;
+}
+
+/* 计数是「彩色圆点 + 数字」：实心点在任何字体下都一样大，不会被字形带着走 */
+.st-diag .diag-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.st-diag .diag-item + .diag-item {
+  margin-left: 8px;
+}
+
+.st-diag .diag-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.st-diag .diag-item-err {
+  color: var(--c-danger);
+}
+
+.st-diag .diag-item-warn {
+  color: var(--c-warn);
+}
+
+.st-diag .diag-item b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 干净态：同一颗绿点 + 文案，和计数态共用一套视觉 */
+.st-diag.is-clean {
+  color: var(--c-ok);
+}
+
+/* 检查中：转圈 + 上一次计数压暗，比整块清空更像「正在更新」 */
+.st-diag.is-running {
+  color: var(--c-dim);
+}
+
+.diag-spin {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: diag-spin 0.8s linear infinite;
+}
+
+.diag-ghost {
+  margin-left: 3px;
+  opacity: 0.45;
+}
+
+@keyframes diag-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diag-spin {
+    animation: none;
+    border-right-color: currentColor;
+  }
 }
