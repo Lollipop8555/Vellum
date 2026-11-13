@@ -8,6 +8,7 @@
 import { t } from '../i18n'
 import { formatBytes } from '../shell/largefile'
 import { canMoveInto, isFile, isFolder, nodePath, type TreeIndex } from '../shell/tree'
+import { visibleHeight, visibleWidth } from './viewport'
 import type { NodeRecord } from '../types'
 
 export interface TreeHandlers {
@@ -388,8 +389,9 @@ export function closeTreeMenu(): void {
 
 function placeMenu(menu: HTMLElement, at: MenuPoint): void {
   const left = at.align === 'right' ? at.x - menu.offsetWidth : at.x
-  menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - menu.offsetWidth - 8))}px`
-  menu.style.top = `${Math.max(8, Math.min(at.y, window.innerHeight - menu.offsetHeight - 8))}px`
+  // 用可见宽高夹取：移动端 innerHeight 比眼睛看到的那块大，按它会算出屏幕外的位置
+  menu.style.left = `${Math.max(8, Math.min(left, visibleWidth() - menu.offsetWidth - 8))}px`
+  menu.style.top = `${Math.max(8, Math.min(at.y, visibleHeight() - menu.offsetHeight - 8))}px`
 }
 
 function showMenu(node: NodeRecord, opts: TreeOptions, at: MenuPoint): void {

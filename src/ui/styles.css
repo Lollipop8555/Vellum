@@ -157,7 +157,17 @@ select {
      所以纵向全部贴边，只保留左右呼吸与岛之间的横向间隙 */
   gap: 0 var(--gap);
   padding: 0 var(--gap);
+  /* 兜底：老内核没有 dvh，至少还能铺满 */
   height: 100vh;
+  /** 见 ui/viewport.ts。 */
+  height: var(--app-height, 100vh);
+}
+
+@supports (height: 1dvh) {
+  .workbench {
+    /* 没有 JS 时用动态视口：工具栏/地址栏占掉的高度算在里面，收放都跟得上 */
+    height: var(--app-height, 100dvh);
+  }
 }
 
 .island {
@@ -692,12 +702,44 @@ svg.eng-ico {
   padding: 0 8px 6px;
 }
 
+/* 面板头部的两个动作：和图标栏不同，这里需要看得见的按钮面 */
 .drawer-actions .btn {
   flex: 1;
   min-width: 0;
   height: 26px;
   padding: 0 6px;
   font-size: 12px;
+  /* 岛内已经有底色，再叠一层 is-island-2 才区分得出「可以按」 */
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+/* 图标比正文小半档；用 dim 让文案继续当主角 */
+.drawer-actions .btn svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--c-dim);
+}
+
+/* .btn:hover 的底色正好也是 island-2，这里必须抬到 raised，否则悬停毫无变化 */
+.drawer-actions .btn:hover:not(:disabled) {
+  background: var(--c-raised);
+  color: var(--c-text);
+}
+
+.drawer-actions .btn:hover:not(:disabled) svg {
+  color: var(--c-text);
+}
+
+.drawer-actions .btn:active:not(:disabled) {
+  background: var(--c-island-2);
+}
+
+/* 窄宽度下宁可截断也不换行，否则一行按钮会变成两行 */
+.drawer-actions .btn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .drawer-search {
@@ -1557,6 +1599,9 @@ body.is-resizing {
 .drop-overlay {
   position: fixed;
   inset: 0;
+  /* fixed 的包含块是布局视口，移动端比可见区域高；显式钉到可见高度，
+     内容才会按眼睛看到的范围居中，而不是被底部工具栏压住 */
+  height: var(--app-height, 100vh);
   z-index: 90;
   background: color-mix(in srgb, var(--c-canvas) 72%, transparent);
   display: grid;
@@ -1578,7 +1623,9 @@ body.is-resizing {
 .toasts {
   position: fixed;
   right: 16px;
-  bottom: 44px;
+  /* fixed 的底边落在布局视口底部，移动端那段被工具栏盖住；把差值补上，
+     视觉上依旧是离可见区域底边 44px（桌面两端相等，等于没变） */
+  bottom: calc(44px + 100vh - min(100vh, var(--app-height, 100vh)));
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1614,6 +1661,8 @@ body.is-resizing {
 .dialog-layer {
   position: fixed;
   inset: 0;
+  /* 同 .drop-overlay：按可见高度铺，居中才不会偏到工具栏底下 */
+  height: var(--app-height, 100vh);
   z-index: 80;
   background: color-mix(in srgb, var(--c-canvas) 62%, transparent);
   display: grid;
@@ -1623,7 +1672,9 @@ body.is-resizing {
 
 .dialog {
   width: min(760px, 100%);
-  max-height: 82vh;
+  /* 100% 是浮层内网格区的高度（已按可见高度算过）：vh 在移动端偏大，
+     只写 82vh 会让对话框底边探出屏幕 */
+  max-height: min(82vh, 100%);
   display: flex;
   flex-direction: column;
   background: var(--c-island);
@@ -1640,7 +1691,7 @@ body.is-resizing {
 /* 左右分栏的对比需要横向空间，否则两侧各自只剩几个字 */
 .dialog.wide {
   width: min(1180px, 100%);
-  max-height: 88vh;
+  max-height: min(88vh, 100%);
 }
 
 .dialog-head {
@@ -2014,6 +2065,8 @@ textarea.raw {
   .workbench {
     display: block;
     padding: 0;
+    /* 打印要按纸张高度分页，不能锁死在屏幕可见高度上 */
+    height: auto;
   }
 
   .body {

@@ -60,6 +60,7 @@ import {
   tabWindowName,
 } from './tabs'
 import { Drawer } from '../ui/layout'
+import { trackViewportHeight } from '../ui/viewport'
 import { applyTheme } from '../ui/theme'
 import { toast } from '../ui/toast'
 import { renderMarkdown } from '../ui/markdown'
@@ -190,6 +191,10 @@ export async function startApp() {
   applyTheme()
   applyStaticText()
   updateLangButton()
+
+  // 移动端的顶部标题栏 / 地址栏会吃掉一截高度，先按真实可见区域定高度基准；
+  // 之后地址栏收放、软键盘弹起、横竖屏切换都会回调，编辑器必须按新容器重新 measure
+  trackViewportHeight(() => state.editor?.layout())
 
   drawer = new Drawer(el('drawer'), () => state.editor?.layout())
   // 开合只影响图标高亮与 aria 状态；列表内容与分区无关，不用重渲染
