@@ -1,4 +1,6 @@
+import { cmSupports, monoSupports } from '../editors/lang-registry'
 import { LANG_LIST, type LangId } from '../editors/languages'
+import type { EngineId } from '../types'
 import { BALANCE_LANGS, parserFor } from './parse'
 import { hasSymbols } from './symbols'
 import { spellLangs } from './providers/spell'
@@ -123,6 +125,13 @@ export interface LanguageSupport {
   reasons: Array<UnavailableReason | null>
   /** 可用项数，排序用 */
   count: number
+  /**
+   * 只有一侧引擎认得这门语言时给出那一侧；两侧都认得（或都不认得）为 null。
+   *
+   * 检查本身与引擎无关（纯文本分析），但语言只有那个引擎能着色——用户要知道
+   * 自己的 ✓ 是建立在哪个引擎上的，否则切过去发现满屏黑白会以为功能坏了。
+   */
+  engine: EngineId | null
 }
 
 let langCache: LanguageSupport[] | null = null
@@ -130,18 +139,21 @@ let langCache: LanguageSupport[] | null = null
 /** 按可用项数降序（V8 的 sort 稳定，同分保持 `LANG_LIST` 顺序） */
 export function languageMatrix(): LanguageSupport[] {
   if (langCache) return langCache
-  langCache = LANG_LIST.map((d) => {
+  langCache = LANG_LIST.map((d): LanguageSupport => {
     const ext = d.ext as readonly string[]
     // 判定拿首个扩展名做代表：.jsonc / .csv 这类特例只落在个别语言上，
     // 不影响「这门语言大体能不能查」这个结论
     const name = ext.length > 0 ? `x.${ext[0]}` : 'x'
     const cells = CHECK_LIST.map((def) => checkAvailability(def.id, d.id, name))
+    const cm = cmSupports(d.id)
+    const mono = monoSupports(d.id)
     return {
       id: d.id,
       label: d.label,
       ok: cells.map((c) => c.ok),
       reasons: cells.map((c) => (c.ok ? null : c.reason)),
       count: cells.filter((c) => c.ok).length,
+      engine: cm === mono ? null : cm ? 'cm' : 'monaco',
     }
   }).sort((a, b) => b.count - a.count)
   return langCache

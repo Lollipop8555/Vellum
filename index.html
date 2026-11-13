@@ -235,73 +235,40 @@
           <div class="drawer-inner">
             <div class="drawer-head">
               <h2 class="drawer-title" id="drawerTitle"></h2>
-              <button
-                class="btn btn-ghost icon-only drawer-close"
-                id="drawerClose"
-                data-i18n-title="drawer.close"
-              >
-                <svg viewBox="0 0 20 20" aria-hidden="true">
-                  <path
-                    d="M5.6 5.6l8.8 8.8M14.4 5.6l-8.8 8.8"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.4"
-                    stroke-linecap="round"
-                  />
-                </svg>
-              </button>
-            </div>
-            <div class="drawer-actions" id="drawerActions">
-              <!--
-                文案挂在 span 上：data-i18n 是整块 textContent 覆盖，写在按钮上会把图标一起冲掉。
-                图标统一「图形占左上、加号占右下」，两个按钮并排时重心一致。
-              -->
-              <button class="btn" id="newFileBtn">
-                <svg viewBox="0 0 20 20" aria-hidden="true">
-                  <path
-                    d="M7.6 2.6H3.8a1.1 1.1 0 0 0-1.1 1.1v9.8a1.1 1.1 0 0 0 1.1 1.1h6.8V5.6z"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linejoin="round"
-                  />
-                  <path
-                    d="M7.6 2.6v3h3"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  />
-                  <path
-                    d="M14.9 13.2v4M12.9 15.2h4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                  />
-                </svg>
-                <span data-i18n="action.newFile"></span>
-              </button>
-              <button class="btn" id="newFolderBtn">
-                <svg viewBox="0 0 20 20" aria-hidden="true">
-                  <path
-                    d="M2.4 6.4h3.8l1.2 1.5h3.2v4.2a1.1 1.1 0 0 1-1.1 1.1H3.5a1.1 1.1 0 0 1-1.1-1.1z"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linejoin="round"
-                  />
-                  <path
-                    d="M14.9 13.2v4M12.9 15.2h4"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                  />
-                </svg>
-                <span data-i18n="action.newFolder"></span>
-              </button>
+              <div class="drawer-head-actions">
+                <button
+                  class="btn btn-ghost icon-only"
+                  id="newMenuBtn"
+                  data-i18n-title="action.new"
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <path
+                      d="M10 4.4v11.2M4.4 10h11.2"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </button>
+                <button
+                  class="btn btn-ghost icon-only drawer-close"
+                  id="drawerClose"
+                  data-i18n-title="drawer.close"
+                >
+                  <svg viewBox="0 0 20 20" aria-hidden="true">
+                    <path
+                      d="M5.6 5.6l8.8 8.8M14.4 5.6l-8.8 8.8"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.4"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </button>
+              </div>
             </div>
             <!-- 搜索分区：文件名搜索 + 可选的设置（内容 / 大文件）；文件页不再带搜索框 -->
             <div class="drawer-searchpane" id="searchPane" hidden>

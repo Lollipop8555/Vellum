@@ -87,13 +87,17 @@ import {
 } from '../ui/sidebar'
 import { renderTrashList, renderTree } from '../ui/tree'
 import {
+  closeNewItemMenu,
   confirmDialog,
   diffDialog,
   helpDialog,
+  newItemMenuDialog,
   openDialog,
+  pasteImportDialog,
   promptDialog,
   toolsDialog,
   transformsDialog,
+  urlImportDialog,
 } from '../ui/dialogs'
 import { DEFAULT_SETTINGS } from '../types'
 import type {
@@ -442,8 +446,10 @@ function syncDrawerFoot() {
   const batch = isFiles && state.selection.size > 0
 
   el('batchBar').hidden = !batch
-  // 整行一起收：只藏按钮会留下一条空白
-  el('drawerActions').hidden = !isFiles || batch
+  // 「+」只属于文件页：搜索/回收站/快照没有「新建」这回事
+  el('newMenuBtn').hidden = !isFiles
+  // 切走时按钮会消失，还挂着的菜单就成了无主浮层
+  if (!isFiles) closeNewItemMenu()
   el('importBtn').hidden = !isFiles || batch
   el('restoreAllBtn').hidden = !isTrash
   el<HTMLButtonElement>('restoreAllBtn').disabled = !hasTrash
@@ -535,8 +541,16 @@ function wireDrawer() {
     void openRecord(first.id, first.nameHit ? undefined : first.hits[0]?.line)
   })
 
-  el('newFileBtn').addEventListener('click', () => void createNode('file'))
-  el('newFolderBtn').addEventListener('click', () => void createNode('folder'))
+  // 传按钮本身：菜单要贴着它弹，而不是跑到屏幕中间
+  const newMenuBtn = el('newMenuBtn')
+  newMenuBtn.addEventListener('click', () =>
+    newItemMenuDialog(newMenuBtn, {
+      file: () => void createNode('file'),
+      folder: () => void createNode('folder'),
+      paste: () => void importPasted(),
+      url: () => void importFromUrl(),
+    }),
+  )
   el('batchExportBtn').addEventListener('click', () => void batchExport())
   el('batchMoveBtn').addEventListener('click', () => batchMove())
   el('batchCleanBtn').addEventListener('click', () => void batchClean())
@@ -769,6 +783,18 @@ async function importFile() {
 }
 
 /**
+ * URL 导入：下载阶段在对话框里完成（含重试与错误提示），
+ * 拿到 File 之后和本地选文件走同一条 ingestFile —— 编码、大文件分档、落库都不另写一套。
+ */
+async function importFromUrl() {
+  const file = await urlImportDialog()
+  if (!file) return
+  // 导入完成要能看见新文件，面板收着就先展开
+  if (!drawer.isOpen) void drawer.show()
+  await ingestFile(file)
+}
+
+/**
  * 语言只在导入时判定一次（D-07）：后缀说得清就按后缀，说不清才嗅探内容。
  * 之后运行时一律读节点上的 lang，不再嗅探。
  */
@@ -842,16 +868,8 @@ async function ingestFile(file: File) {
 }
 
 async function importPasted() {
-  let text = ''
-  try {
-    text = await navigator.clipboard.readText()
-  } catch {
-    /* 权限被拒时按空处理 */
-  }
-  if (!text) {
-    toast(t('toast.noText'), 'error')
-    return
-  }
+  const text = await pasteImportDialog()
+  if (!text) return
 
   const eol = detectEol(text)
   const normalized = normalizeEol(text, eol)

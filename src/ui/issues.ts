@@ -10,6 +10,7 @@ import {
 } from '../diagnostics/types'
 import type { LangId } from '../editors/languages'
 import { openDialog } from './dialogs'
+import { ENGINE_NAMES, engineIcon } from './icons'
 
 /**
  * 检查面板：只负责把 app 算好的结果画出来。
@@ -162,6 +163,25 @@ function buildOptions(state: IssuesState, handlers: IssuesHandlers): HTMLElement
 }
 
 /**
+ * 图例把三种状态摊开说：两个引擎都行 / 只有一个引擎行 / 不行。
+ * 中间那种直接用引擎图标，和表格里的单元格长得一样，不用再解释「那个小图标是啥」。
+ */
+function buildLegend(): HTMLElement {
+  const legend = el('div', 'support-legend')
+  const engineMarks = el('span', 'support-legend-engines')
+  engineMarks.innerHTML = engineIcon('cm') + engineIcon('monaco')
+  legend.append(
+    el('span', 'support-legend-mark is-yes', '✓'),
+    el('span', undefined, t('issues.supportLegendYes')),
+    engineMarks,
+    el('span', undefined, t('issues.supportLegendEngine')),
+    el('span', 'support-legend-mark is-no', '×'),
+    el('span', undefined, t('issues.supportLegendNo')),
+  )
+  return legend
+}
+
+/**
  * 「语言 × 检查项」矩阵，弹窗展示。
  *
  * 数据来自 `languageMatrix()`，即同一套 `checkAvailability`——不另外维护一张表，
@@ -169,7 +189,7 @@ function buildOptions(state: IssuesState, handlers: IssuesHandlers): HTMLElement
  */
 function openSupportDialog(lang: LangId): void {
   const wrap = el('div', 'support-wrap')
-  wrap.append(el('div', 'support-legend', t('issues.supportLegend')))
+  wrap.append(buildLegend())
 
   const scroll = el('div', 'support-scroll')
   const table = el('table', 'support-table')
@@ -203,10 +223,24 @@ function openSupportDialog(lang: LangId): void {
 
     CHECK_LIST.forEach((_, i) => {
       const ok = row.ok[i]
-      const cell = el('td', `support-cell ${ok ? 'is-yes' : 'is-no'}`, ok ? '✓' : '×')
+      const cell = el('td', 'support-cell')
       if (!ok) {
+        cell.classList.add('is-no')
+        cell.textContent = '×'
         const reason = row.reasons[i]
         cell.title = reason ? t(REASON_KEY[reason]) : t('issues.planned')
+      } else if (row.engine) {
+        // 只有一侧引擎认得这门语言：把 ✓ 换成那家的图标。检查是纯文本分析、
+        // 两个引擎都跑，但用户切过去会发现满屏黑白，得知道自己押在哪个引擎上
+        cell.classList.add('is-engine')
+        cell.innerHTML = engineIcon(row.engine)
+        cell.title = t('issues.supportEngine', {
+          engine: ENGINE_NAMES[row.engine],
+          lang: row.label,
+        })
+      } else {
+        cell.classList.add('is-yes')
+        cell.textContent = '✓'
       }
       tr.append(cell)
     })

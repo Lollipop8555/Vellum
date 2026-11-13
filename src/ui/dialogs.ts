@@ -1,5 +1,6 @@
 import { t } from '../i18n'
 import { computeDiff } from '../shell/diff'
+import { formatBytes } from '../shell/largefile'
 import {
   b64decode,
   b64encode,
@@ -9,6 +10,7 @@ import {
   urlEncode,
 } from '../shell/tools'
 import type { TransformId } from '../shell/transform'
+import { UrlImportError, fetchUrlAsFile } from '../shell/url-import'
 import { TRANSFORM_KEYS } from './labels'
 
 const layer = () => document.getElementById('dialogLayer') as HTMLElement
@@ -240,6 +242,397 @@ export function promptDialog(opts: {
     const dot = input.value.lastIndexOf('.')
     input.focus()
     input.setSelectionRange(0, dot > 0 ? dot : input.value.length)
+  })
+}
+
+/* ------------------------------------------------------------ 新建菜单 */
+
+// 静态图形，和抽屉头、文件树里用的是同一套描边风格
+const FILE_ICON =
+  '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+  '<path d="M7.6 2.6H3.8a1.1 1.1 0 0 0-1.1 1.1v9.8a1.1 1.1 0 0 0 1.1 1.1h6.8V5.6z" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>' +
+  '<path d="M7.6 2.6v3h3" fill="none" stroke="currentColor" stroke-width="1.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round"/>' +
+  '<path d="M14.9 13.2v4M12.9 15.2h4" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+  'stroke-linecap="round"/></svg>'
+
+const FOLDER_ICON =
+  '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+  '<path d="M2.4 6.4h3.8l1.2 1.5h3.2v4.2a1.1 1.1 0 0 1-1.1 1.1H3.5a1.1 1.1 0 0 1-1.1-1.1z" ' +
+  'fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>' +
+  '<path d="M14.9 13.2v4M12.9 15.2h4" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+  'stroke-linecap="round"/></svg>'
+
+const CLIPBOARD_ICON =
+  '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+  '<path d="M4.4 5.6h11.2v9.7a1.1 1.1 0 0 1-1.1 1.1H5.5a1.1 1.1 0 0 1-1.1-1.1z" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>' +
+  '<path d="M7.8 3.6h4.4v2.1H7.8z" fill="none" stroke="currentColor" stroke-width="1.3" ' +
+  'stroke-linejoin="round"/>' +
+  '<path d="M7.2 9.4h5.6M7.2 12.2h3.8" fill="none" stroke="currentColor" stroke-width="1.2" ' +
+  'stroke-linecap="round"/></svg>'
+
+const LINK_ICON =
+  '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+  '<path d="M8.6 11.4a2.9 2.9 0 0 0 4.1 0l2.1-2.1a2.9 2.9 0 0 0-4.1-4.1l-.9.9" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>' +
+  '<path d="M11.4 8.6a2.9 2.9 0 0 0-4.1 0l-2.1 2.1a2.9 2.9 0 0 0 4.1 4.1l.9-.9" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
+
+/** 同一时刻只允许一个 + 菜单，再点同一个按钮视为收起 */
+let popMenu: { anchor: HTMLElement; root: HTMLElement; close(): void } | null = null
+
+export function closeNewItemMenu() {
+  popMenu?.close()
+}
+
+/**
+ * 抽屉标题栏的 + 菜单：挂在按钮下沿的浮层（右键菜单那样），而不是居中对话框。
+ * 都是「再来一步」的动作，居中弹窗要先跨过半个屏幕才能选，反而更远。
+ */
+export function newItemMenuDialog(
+  anchor: HTMLElement,
+  actions: { file(): void; folder(): void; paste(): void; url(): void },
+) {
+  if (popMenu?.anchor === anchor) {
+    popMenu.close()
+    return
+  }
+  closeNewItemMenu()
+
+  const root = document.createElement('div')
+  root.className = 'popmenu'
+  root.setAttribute('role', 'menu')
+  // 先量尺寸再定位，避免从左上角滑到位的闪烁
+  root.style.visibility = 'hidden'
+
+  const buttons: HTMLButtonElement[] = []
+  const add = (label: string, icon: string, run: () => void) => {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'menu-item'
+    btn.setAttribute('role', 'menuitem')
+
+    const box = document.createElement('span')
+    box.className = 'menu-ico'
+    box.innerHTML = icon
+
+    const text = document.createElement('span')
+    text.textContent = label
+
+    btn.append(box, text)
+    btn.onclick = () => {
+      close()
+      run()
+    }
+    buttons.push(btn)
+    root.appendChild(btn)
+  }
+
+  add(t('action.newFile'), FILE_ICON, actions.file)
+  add(t('action.newFolder'), FOLDER_ICON, actions.folder)
+  add(t('action.clipboardImport'), CLIPBOARD_ICON, actions.paste)
+  add(t('action.urlImport'), LINK_ICON, actions.url)
+
+  const focusAt = (index: number) => {
+    const n = buttons.length
+    buttons[((index % n) + n) % n]?.focus()
+  }
+
+  const close = () => {
+    if (popMenu?.root !== root) return
+    popMenu = null
+    document.removeEventListener('mousedown', onDown, true)
+    document.removeEventListener('keydown', onKey, true)
+    window.removeEventListener('resize', close)
+    window.removeEventListener('scroll', close, true)
+    root.remove()
+    anchor.setAttribute('aria-expanded', 'false')
+  }
+
+  // 点空白、点别处、切视图都要收：用捕获阶段先于按钮自己的 click
+  const onDown = (e: MouseEvent) => {
+    const target = e.target as Node | null
+    if (target && (root.contains(target) || anchor.contains(target))) return
+    close()
+  }
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      close()
+      anchor.focus()
+      return
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+      focusAt(current + (e.key === 'ArrowDown' ? 1 : -1))
+      return
+    }
+    // Tab 会把焦点带出菜单，菜单却还挂着，索性收起
+    if (e.key === 'Tab') close()
+  }
+
+  const place = () => {
+    const rect = anchor.getBoundingClientRect()
+    const width = root.offsetWidth
+    const height = root.offsetHeight
+    // 右对齐按钮：菜单左边缘往左长，不会顶出面板
+    const left = Math.min(
+      Math.max(8, rect.right - width),
+      Math.max(8, window.innerWidth - width - 8),
+    )
+    const below = rect.bottom + 4
+    const top = below + height > window.innerHeight - 8 ? Math.max(8, rect.top - height - 4) : below
+    root.style.left = `${Math.round(left)}px`
+    root.style.top = `${Math.round(top)}px`
+  }
+
+  document.body.appendChild(root)
+  place()
+  root.style.visibility = ''
+
+  popMenu = { anchor, root, close }
+  anchor.setAttribute('aria-expanded', 'true')
+  document.addEventListener('mousedown', onDown, true)
+  document.addEventListener('keydown', onKey, true)
+  window.addEventListener('resize', close)
+  window.addEventListener('scroll', close, true)
+  // 键盘用户直接回车就能选第一项
+  buttons[0]?.focus()
+}
+
+/* --------------------------------------------------------- 粘贴文本导入 */
+
+/**
+ * 粘贴文本 → 返回文本，落库交给调用方。
+ *
+ * 不在打开时去读剪贴板：Chrome 会为 `readText()` 弹一个「粘贴」授权气泡，
+ * 非安全上下文还会直接失败，用户看到的是一个莫名的小浮层而不是对话框。
+ * 这里把光标放进输入框，用户自己 Ctrl/⌘+V —— 少一步弹窗，粘贴也走浏览器原生的那次事件。
+ */
+export function pasteImportDialog(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const body = document.createElement('div')
+
+    const hint = document.createElement('div')
+    hint.className = 'dialog-hint'
+    hint.textContent = t('dialog.pasteHint')
+
+    const area = document.createElement('textarea')
+    area.className = 'dialog-textarea'
+    area.spellcheck = false
+    area.placeholder = t('dialog.pastePlaceholder')
+
+    const err = document.createElement('div')
+    err.className = 'dialog-err'
+    err.hidden = true
+
+    body.append(hint, area, err)
+
+    const foot = document.createElement('div')
+    const cancel = document.createElement('button')
+    cancel.className = 'btn btn-ghost'
+    cancel.textContent = t('action.cancel')
+    const ok = document.createElement('button')
+    ok.className = 'btn btn-primary'
+    ok.textContent = t('action.doImport')
+    foot.append(cancel, ok)
+
+    let settled = false
+    let dlg: DialogHandle
+
+    const teardown = () => document.removeEventListener('keydown', onKey, true)
+
+    const finish = (text: string | null) => {
+      if (settled) return
+      settled = true
+      teardown()
+      dlg.close()
+      resolve(text)
+    }
+
+    const submit = () => {
+      const text = area.value
+      if (!text.trim()) {
+        err.textContent = t('err.pasteEmpty')
+        err.hidden = false
+        area.focus()
+        return
+      }
+      finish(text)
+    }
+
+    // 多行输入：回车是换行，Ctrl/⌘+Enter 才是导入
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return
+      if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
+      e.preventDefault()
+      e.stopPropagation()
+      submit()
+    }
+    document.addEventListener('keydown', onKey, true)
+
+    ok.onclick = submit
+    cancel.onclick = () => finish(null)
+
+    dlg = openDialog({
+      title: t('dialog.pasteImport'),
+      body,
+      foot,
+      narrow: true,
+      onClose: () => finish(null),
+    })
+    area.focus()
+  })
+}
+
+/* --------------------------------------------------------- URL 导入 */
+
+function urlErrorText(err: unknown): string {
+  if (err instanceof UrlImportError) {
+    if (err.reason === 'url') return t('err.urlInvalid')
+    if (err.reason === 'scheme') return t('err.urlScheme')
+    if (err.reason === 'status') return t('err.urlStatus', { status: err.status })
+    if (err.reason === 'timeout') return t('err.urlTimeout')
+    if (err.reason === 'empty') return t('err.urlEmpty')
+    return t('err.urlNetwork')
+  }
+  return t('toast.readFailed', { msg: (err as Error).message })
+}
+
+/**
+ * 输入地址 → 下载 → 返回 File，交给调用方走现有的 ingestFile。
+ * 失败就留在窗口里说明原因：跨域、404、超时都能重试，不用从头再点一遍。
+ */
+export function urlImportDialog(): Promise<File | null> {
+  return new Promise((resolve) => {
+    const body = document.createElement('div')
+
+    const hint = document.createElement('div')
+    hint.className = 'dialog-hint'
+    hint.textContent = t('dialog.urlHint')
+
+    const input = document.createElement('input')
+    input.className = 'dialog-input'
+    input.type = 'url'
+    input.spellcheck = false
+    input.autocomplete = 'off'
+    input.placeholder = t('dialog.urlPlaceholder')
+
+    const err = document.createElement('div')
+    err.className = 'dialog-err'
+    err.hidden = true
+
+    const progress = document.createElement('div')
+    progress.className = 'url-progress'
+    progress.hidden = true
+    const spin = document.createElement('span')
+    spin.className = 'spinner'
+    const progressText = document.createElement('span')
+    progress.append(spin, progressText)
+
+    body.append(hint, input, err, progress)
+
+    const foot = document.createElement('div')
+    const cancel = document.createElement('button')
+    cancel.className = 'btn btn-ghost'
+    cancel.textContent = t('action.cancel')
+    const ok = document.createElement('button')
+    ok.className = 'btn btn-primary'
+    ok.textContent = t('action.doImport')
+    foot.append(cancel, ok)
+
+    let settled = false
+    let busy = false
+    let ctrl: AbortController | null = null
+    let dlg: DialogHandle
+
+    const teardown = () => document.removeEventListener('keydown', onKey, true)
+
+    const finish = (file: File | null) => {
+      if (settled) return
+      settled = true
+      ctrl?.abort()
+      teardown()
+      dlg.close()
+      resolve(file)
+    }
+
+    const showErr = (message: string) => {
+      err.textContent = message
+      err.hidden = false
+    }
+
+    const submit = () => {
+      if (busy) return
+      const raw = input.value.trim()
+      if (!raw) {
+        showErr(t('err.urlRequired'))
+        input.focus()
+        return
+      }
+
+      err.hidden = true
+      busy = true
+      ctrl = new AbortController()
+      ok.disabled = true
+      // readOnly 而不是 disabled：地址保持可见，才知道在下载哪一个
+      input.readOnly = true
+      progress.hidden = false
+      progressText.textContent = t('url.fetching')
+
+      void fetchUrlAsFile(raw, ctrl.signal, ({ received, total }) => {
+        if (settled) return
+        progressText.textContent = total
+          ? t('url.fetchingSize', { done: formatBytes(received), total: formatBytes(total) })
+          : t('url.fetching')
+      })
+        .then((file) => finish(file))
+        .catch((e: unknown) => {
+          // 关闭对话框导致的 abort 不算错误
+          if (settled || (e as Error).name === 'AbortError') return
+          busy = false
+          ctrl = null
+          ok.disabled = false
+          input.readOnly = false
+          progress.hidden = true
+          showErr(urlErrorText(e))
+          input.focus()
+        })
+    }
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return
+      if (e.key !== 'Enter') return
+      // 焦点在按钮上时交给按钮自己（取消键要能取消），其余位置回车即导入
+      if (e.target instanceof HTMLButtonElement) return
+      e.preventDefault()
+      e.stopPropagation()
+      submit()
+    }
+    document.addEventListener('keydown', onKey, true)
+
+    dlg = openDialog({
+      title: t('dialog.urlImport'),
+      body,
+      foot,
+      narrow: true,
+      onClose: () => {
+        if (settled) return
+        settled = true
+        ctrl?.abort()
+        teardown()
+        resolve(null)
+      },
+    })
+
+    cancel.onclick = () => finish(null)
+    ok.onclick = submit
+    input.focus()
   })
 }
 

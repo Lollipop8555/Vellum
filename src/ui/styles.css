@@ -694,55 +694,18 @@ svg.eng-ico {
   color: var(--c-text);
 }
 
-.drawer-head .btn {
+/* 标题占左侧，动作按钮靠右：+ 与收起并排，间距比标题默认 gap 更紧 */
+.drawer-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
 }
 
-/* 顶部新建行：两个按钮平分宽度，位置贴着标题 */
-.drawer-actions {
-  display: flex;
-  gap: 6px;
-  padding: 0 8px 6px;
-}
-
-/* 面板头部的两个动作：和图标栏不同，这里需要看得见的按钮面 */
-.drawer-actions .btn {
-  flex: 1;
-  min-width: 0;
-  height: 26px;
-  padding: 0 6px;
-  font-size: 12px;
-  /* 岛内已经有底色，再叠一层 is-island-2 才区分得出「可以按」 */
-  background: var(--c-island-2);
-  color: var(--c-text);
-}
-
-/* 图标比正文小半档；用 dim 让文案继续当主角 */
-.drawer-actions .btn svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  color: var(--c-dim);
-}
-
-/* .btn:hover 的底色正好也是 island-2，这里必须抬到 raised，否则悬停毫无变化 */
-.drawer-actions .btn:hover:not(:disabled) {
-  background: var(--c-raised);
-  color: var(--c-text);
-}
-
-.drawer-actions .btn:hover:not(:disabled) svg {
-  color: var(--c-text);
-}
-
-.drawer-actions .btn:active:not(:disabled) {
-  background: var(--c-island-2);
-}
-
-/* 窄宽度下宁可截断也不换行，否则一行按钮会变成两行 */
-.drawer-actions .btn > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 加号用 16px：和标题字高接近，放大到 18px 会把标题行撑高 */
+#newMenuBtn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .drawer-search {
@@ -1734,10 +1697,110 @@ body.is-resizing {
   border-color: var(--c-accent);
 }
 
+/* 粘贴导入：多行输入，按内容撑高但别把对话框顶出屏幕 */
+.dialog-textarea {
+  display: block;
+  width: 100%;
+  min-height: 132px;
+  max-height: 46vh;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--c-border);
+  background: var(--c-island-2);
+  color: var(--c-text);
+  font-family: var(--mono-font);
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+.dialog-textarea:focus {
+  border-color: var(--c-accent);
+}
+
+.dialog-textarea::placeholder {
+  color: var(--c-dim);
+}
+
 .dialog-err {
   color: var(--c-danger);
   font-size: 12px;
   margin-top: 6px;
+}
+
+/* + 菜单：贴在按钮下沿的浮层（像右键菜单），不是居中弹窗 */
+.popmenu {
+  position: fixed;
+  z-index: 85;
+  min-width: 176px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--c-island);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-drawer);
+  animation: popmenu-in 90ms ease-out;
+}
+
+/* 从按钮方向落下：位移只有 3px，不要做成抽屉那种滑入 */
+@keyframes popmenu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--c-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 键盘上下切换时焦点落在项上，和 hover 用同一套底色 */
+.menu-item:hover,
+.menu-item:focus,
+.menu-item:focus-visible {
+  background: var(--c-island-2);
+  outline: none;
+}
+
+.menu-ico {
+  display: flex;
+  flex: none;
+  color: var(--c-dim);
+}
+
+.menu-item:hover .menu-ico {
+  color: var(--c-text);
+}
+
+.menu-ico svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* URL 导入的下载提示：转圈 + 字节数，和错误提示同列表排 */
+.url-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--c-dim);
+  font-size: 12px;
 }
 
 .field {
@@ -2313,9 +2376,31 @@ textarea.raw {
   min-height: 0;
 }
 
+/* 图例一行摊开三种状态：勾、引擎图标、叉。图标和单元格里的大小一致才认得出 */
 .support-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 5px;
   color: var(--c-dim);
   font-size: 12px;
+}
+
+.support-legend-mark.is-yes {
+  color: var(--c-ok);
+}
+
+.support-legend-mark.is-no {
+  color: var(--c-faint);
+  margin-left: 6px;
+}
+
+.support-legend-engines {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  opacity: 0.75;
 }
 
 .support-scroll {
@@ -2393,6 +2478,14 @@ textarea.raw {
 
 .support-cell.is-yes {
   color: var(--c-ok);
+}
+
+/* 「只有一个引擎认得这门语言」：勾换成那家的标记，hover 说明是哪个引擎 */
+.support-cell.is-engine svg.eng-ico {
+  width: 12px;
+  height: 12px;
+  margin: 0 auto;
+  opacity: 0.7;
 }
 
 /* 不支持用 ×，别用「—」：这个表就是在问「有没有」，符号要能一眼辨形 */
