@@ -1421,25 +1421,37 @@ body.is-resizing {
   border-style: dashed;
 }
 
-/* mermaid 图表：先显示源码，画好之后替换成图 */
-.mermaid-block {
+/* 图表（mermaid / graphviz）：先显示源码，画好之后替换成图 */
+.mermaid-block,
+.graphviz-block {
   margin: 1em 0;
   text-align: center;
   overflow-x: auto;
 }
 
-.mermaid-block svg {
+.mermaid-block svg,
+.graphviz-block svg {
   max-width: 100%;
   height: auto;
 }
 
-.mermaid-block .mermaid-source {
+.mermaid-block .mermaid-source,
+.graphviz-block .graphviz-source {
   margin: 0;
   text-align: left;
 }
 
-.mermaid-block.is-error .mermaid-source {
+.mermaid-block.is-error .mermaid-source,
+.graphviz-block.is-error .graphviz-source {
   color: var(--c-danger);
+}
+
+/* 降级时源码还在，错误信息单独一行，别把源码挤掉 */
+.graphviz-block .graphviz-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--c-danger);
+  text-align: left;
 }
 
 /* ---------- 状态栏 ---------- */

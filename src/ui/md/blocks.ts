@@ -37,7 +37,31 @@ const mermaid: BlockRenderer = {
   },
 }
 
-const RENDERERS: readonly BlockRenderer[] = [mermaid]
+const graphviz: BlockRenderer = {
+  // `dot` 是 Graphviz 的语法名，`graphviz` 是工具名，`gv` 是另一套常见扩展名：
+  // 三个都收，免得用户按习惯写哪个都得试一遍
+  langs: ['dot', 'graphviz', 'gv'],
+  render(node) {
+    return {
+      type: 'element',
+      tagName: 'div',
+      properties: {
+        className: ['graphviz-block'],
+        dataDot: encodeURIComponent(node.value),
+      },
+      children: [
+        {
+          type: 'element',
+          tagName: 'pre',
+          properties: { className: ['graphviz-source'] },
+          children: [{ type: 'text', value: node.value }],
+        },
+      ],
+    }
+  },
+}
+
+const RENDERERS: readonly BlockRenderer[] = [mermaid, graphviz]
 
 const INDEX = new Map<string, BlockRenderer>()
 for (const renderer of RENDERERS) {

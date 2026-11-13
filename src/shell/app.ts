@@ -2885,18 +2885,38 @@ async function renderPreviewNow(): Promise<void> {
   // 图表从占位换成 svg 会改变高度，渲染完再校正一次
   if (seq !== previewSeq) return
   body.scrollTop = scrollTop
-  if (!body.querySelector('.mermaid-block')) return
-  // mermaid 体积大，只在文档里真有图表时才加载
-  const { renderMermaidBlocks } = await import('../ui/mermaid')
-  if (seq !== previewSeq || !state.previewOpen) return
-  await renderMermaidBlocks(body, currentTheme())
+  await hydrateDiagrams(body, seq)
   if (seq === previewSeq) body.scrollTop = scrollTop
+}
+
+/** 预览里的图表语言；新增图表库时只改这一处 */
+const DIAGRAM_SELECTOR = '.mermaid-block, .graphviz-block'
+
+/**
+ * 把占位块画成图。
+ *
+ * 两个引擎都按「文档里真有才加载」处理：mermaid 4MB、viz 1.2MB，
+ * 首屏包不该为没出现的图表付钱。顺序固定 mermaid 先，纯属历史顺序，
+ * 两者互不依赖。
+ */
+async function hydrateDiagrams(body: HTMLElement, seq: number) {
+  const theme = currentTheme()
+  if (body.querySelector('.mermaid-block')) {
+    const { renderMermaidBlocks } = await import('../ui/mermaid')
+    if (seq !== previewSeq || !state.previewOpen) return
+    await renderMermaidBlocks(body, theme)
+  }
+  if (body.querySelector('.graphviz-block')) {
+    const { renderGraphvizBlocks } = await import('../ui/graphviz')
+    if (seq !== previewSeq || !state.previewOpen) return
+    await renderGraphvizBlocks(body, theme)
+  }
 }
 
 /** 换主题后图表要按新配色重画，正文本身走 CSS 变量不用重建 */
 function refreshPreviewTheme() {
   if (!state.previewOpen) return
-  if (!el('previewBody').querySelector('.mermaid-block')) return
+  if (!el('previewBody').querySelector(DIAGRAM_SELECTOR)) return
   void renderPreviewNow()
 }
 

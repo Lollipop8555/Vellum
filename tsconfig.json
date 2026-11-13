@@ -36,6 +36,7 @@
       "katex": ["./vendor/katex"],
       "katex/*": ["./vendor/katex/*"],
       "lowlight": ["./vendor/lowlight"],
+      "@viz-js/viz": ["./vendor/@viz-js/viz"],
       "highlight.js": ["./vendor/highlight.js"],
       "highlight.js/*": ["./vendor/highlight.js/*"],
       "mermaid": ["./vendor/mermaid"],

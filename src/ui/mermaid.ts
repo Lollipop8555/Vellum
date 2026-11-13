@@ -47,7 +47,11 @@ export async function renderMermaidBlocks(host: HTMLElement, theme: 'dark' | 'li
     } catch (error) {
       block.classList.add('is-error')
       block.classList.remove('is-rendered')
-      block.innerHTML = `<pre class="mermaid-source is-error">${(error as Error).message}</pre>`
+      // 报错文本里可能带着图表源码片段，用 textContent 拼，别走 innerHTML
+      const pre = document.createElement('pre')
+      pre.className = 'mermaid-source is-error'
+      pre.textContent = (error as Error).message
+      block.replaceChildren(pre)
     }
   }
 }

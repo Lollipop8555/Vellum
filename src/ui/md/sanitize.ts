@@ -69,7 +69,9 @@ const attributes: AttrList = {
   ...base.attributes,
   // className 是高亮与 KaTeX 的唯一凭据；style 是 KaTeX 排版上下标的唯一手段
   '*': withClass(base.attributes?.['*'], ['style']),
-  div: withClass(base.attributes?.div, ['style', 'dataMermaid']),
+  // dataMermaid / dataDot 是图表占位的源码载体：图表在浏览器侧异步绘制，
+  // 换主题重画、打印前 hydrate 都靠它，被白名单丢掉就只剩一张画不出来的空块
+  div: withClass(base.attributes?.div, ['style', 'dataMermaid', 'dataDot']),
   span: withClass(base.attributes?.span, ['style']),
   pre: withClass(base.attributes?.pre),
   code: withClass(base.attributes?.code),

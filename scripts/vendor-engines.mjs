@@ -54,6 +54,7 @@ const ROOTS = [
   'lowlight',
   'highlight.js',
   'mermaid',
+  '@viz-js/viz',
 ]
 const SCOPES = ['@codemirror/', '@lezer/', '@marijn/']
 const isEngine = (name) => ROOTS.includes(name) || SCOPES.some((s) => name.startsWith(s))
@@ -99,6 +100,16 @@ const KEEP_RULES = {
       rel === 'dist/katex.min.css' ||
       rel.startsWith('dist/fonts/')
     )
+  },
+  /**
+   * @viz-js/viz：DOT 渲染。
+   * 实测 5.7MB，但真正的运行时只有一个文件——`dist/viz.js` 把 WASM 以字节数组
+   * 内联在 JS 里（包里没有独立 .wasm），而 `lib/backend.js`、`dist/viz.cjs`、
+   * `dist/viz-global.js` 是三份内容相同的另发行形式。只留 ESM 那份 + 类型声明。
+   */
+  '@viz-js/viz': (rel, isDir) => {
+    if (isDir) return true
+    return rel === 'package.json' || rel === 'dist/viz.js' || rel.startsWith('types/')
   },
   'highlight.js': (rel, isDir) => {
     // lowlight 用 highlight.js/lib/core 与 lib/languages/*。
@@ -151,6 +162,7 @@ const REQUIRED_FILES = {
   mermaid: ['dist/mermaid.core.mjs'],
   katex: ['dist/katex.mjs', 'dist/katex.min.css'],
   'highlight.js': ['lib/core.js', 'lib/common.js', 'lib/languages/groovy.js', 'lib/languages/kotlin.js'],
+  '@viz-js/viz': ['dist/viz.js', 'types/index.d.ts'],
 }
 
 const mode = process.argv.includes('--check')
@@ -240,7 +252,15 @@ async function collectFromManifest() {
     await mkdir(dir, { recursive: true })
     execFileSync('tar', ['-xzf', path.join(work, tgz), '-C', dir])
 
-    const pkgDir = path.join(dir, 'package')
+    // tarball 的顶层目录不一定叫 package/：绝大多数是，但老一些的 @types/* 用包名本身。
+    // 先把实际落地的那一层找出来，别假设（@types/d3 就是这么炸的）。
+    const unpacked = (await readdir(dir, { withFileTypes: true })).filter((e) => e.isDirectory())
+    const root = unpacked.find((e) => e.name === 'package') ?? unpacked[0]
+    if (!root) throw new Error(`npm pack ${name}@${version} 解开后是空的`)
+    const pkgDir = path.join(dir, root.name)
+    if (!existsSync(path.join(pkgDir, 'package.json'))) {
+      throw new Error(`${name}@${version} 解包目录 ${pkgDir} 下没有 package.json`)
+    }
     found.set(name, { version, dir: pkgDir })
 
     const pkg = await readJson(path.join(pkgDir, 'package.json'))
