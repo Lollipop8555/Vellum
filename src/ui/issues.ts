@@ -153,7 +153,7 @@ function buildOptions(state: IssuesState, handlers: IssuesHandlers): HTMLElement
 
   const rerun = el('button', 'btn btn-ghost issues-rerun', t('issues.rerun'))
   rerun.addEventListener('click', () => handlers.onRerun())
-  // 支持矩阵是「查资料」，不是常驻信息——12 列 × 110 行塞进侧栏会把检查结果整个挤下去
+  // 支持矩阵是「查资料」，不是常驻信息——十几列 × 100 多行塞进侧栏会把检查结果整个挤下去
   const support = el('button', 'btn btn-ghost issues-support-btn', t('issues.support'))
   support.addEventListener('click', () => openSupportDialog(state.lang))
   const actions = el('div', 'issues-actions')

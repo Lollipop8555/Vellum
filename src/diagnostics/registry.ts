@@ -67,6 +67,10 @@ export function checkAvailability(kind: CheckKind, lang: LangId, name: string): 
       if (DSV_EXT.has(extOf(name))) return OK
       return { ok: false, reason: 'langOnly' }
 
+    case 'mdLint':
+      // 规则本身就是 Markdown 语法，别的语言没有「标题跳级」「围栏空行」这些概念
+      return lang === 'markdown' ? OK : { ok: false, reason: 'langOnly' }
+
     case 'duplicate':
     case 'arity':
     case 'typeArgs':

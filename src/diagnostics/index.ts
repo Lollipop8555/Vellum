@@ -5,6 +5,7 @@ import { checkAvailability, enabledChecks, hasRunnable } from './registry'
 import { balanceIssues, treeIssues } from './providers/syntax'
 import { formatIssues } from './providers/format'
 import { structureIssues } from './providers/structure'
+import { mdLintIssues } from './providers/mdLint'
 import { fileHealthIssues, fullwidthIssues } from './providers/filehealth'
 import { arityIssues, duplicateIssues, typeArgIssues, typoIssues, unusedIssues } from './providers/symbols'
 import { spellIdentIssues, spellIssues } from './providers/spell'
@@ -31,7 +32,7 @@ export const MAX_TEXT = 512 * 1024
  * 规则版本。改了任何一条规则就 +1：缓存 key 里带着它，
  * 旧文件才不会拿着旧结果当权威（DG-09）。
  */
-export const DIAG_VERSION = 4
+export const DIAG_VERSION = 5
 
 export { contentHash } from './parse'
 export { availabilityFor, checkAvailability, extOf } from './registry'
@@ -77,6 +78,7 @@ const PROVIDERS: Partial<Record<CheckKind, (ctx: ProviderContext) => Issue[]>> =
   },
   format: ({ text, lang }) => formatIssues(text, lang),
   structure: ({ text, lang, name, tree }) => structureIssues(text, lang, name, tree),
+  mdLint: ({ text }) => mdLintIssues(text),
   fileHealth: ({ text }) => fileHealthIssues(text),
   fullwidth: ({ text, tree }) => fullwidthIssues(text, tree),
   duplicate: ({ symbols }) => {

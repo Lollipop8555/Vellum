@@ -1,6 +1,7 @@
 import type { SyntaxNode, Tree } from '@lezer/common'
 import type { LangId } from '../../editors/languages'
 import { slugify } from '../../ui/md/slug'
+import { maskLines, toLines } from '../lines'
 import { extOf } from '../registry'
 import type { Issue } from '../types'
 
@@ -91,55 +92,6 @@ export function duplicateKeyIssues(tree: Tree, text: string, lang: LangId): Issu
 }
 
 /* --------------------------------------------------------- Markdown */
-
-interface Line {
-  start: number
-  text: string
-}
-
-function toLines(text: string): Line[] {
-  const lines: Line[] = []
-  let start = 0
-  while (start <= text.length) {
-    const nl = text.indexOf('\n', start)
-    const end = nl < 0 ? text.length : nl
-    lines.push({ start, text: text.slice(start, end).replace(/\r$/, '') })
-    if (nl < 0) break
-    start = nl + 1
-  }
-  return lines
-}
-
-const FENCE = /^\s{0,3}(`{3,}|~{3,})/
-
-/**
- * 逐行标出「这一行是不是代码块/前置元数据」。
- * 死链、标题跳级、表格列数这三条规则都必须在代码块外才成立：
- * 文档里贴一段示例 Markdown 是常态，那里面什么奇怪写法都有。
- */
-function maskLines(lines: Line[]): boolean[] {
-  const skip = new Array<boolean>(lines.length).fill(false)
-  let fence: string | null = null
-  // 前置元数据只在文件最开头成立
-  if (lines.length > 1 && /^---\s*$/.test(lines[0].text)) {
-    const end = lines.findIndex((line, i) => i > 0 && /^---\s*$/.test(line.text))
-    if (end > 0) for (let i = 0; i <= end; i++) skip[i] = true
-  }
-  lines.forEach((line, i) => {
-    if (skip[i]) return
-    const match = FENCE.exec(line.text)
-    if (fence) {
-      skip[i] = true
-      if (match && match[1][0] === fence[0] && match[1].length >= fence.length) fence = null
-      return
-    }
-    if (match) {
-      fence = match[1]
-      skip[i] = true
-    }
-  })
-  return skip
-}
 
 const HEADING = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/
 const LINK = /\[[^\]]*\]\(#([^)\s]+)\)/g

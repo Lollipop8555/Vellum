@@ -13,6 +13,7 @@ export type CheckKind =
   | 'syntax'
   | 'format'
   | 'structure'
+  | 'mdLint'
   | 'duplicate'
   | 'typo'
   | 'unused'
@@ -28,6 +29,8 @@ export interface ChecksSettings {
   syntax: boolean
   format: boolean
   structure: boolean
+  /** Markdown 风格规则（plans/markdown.md §8）；只对 .md 生效 */
+  mdLint: boolean
   duplicate: boolean
   typo: boolean
   unused: boolean
@@ -43,6 +46,7 @@ export const DEFAULT_CHECKS: ChecksSettings = {
   syntax: true,
   format: true,
   structure: true,
+  mdLint: true,
   duplicate: true,
   typo: true,
   unused: true,
@@ -71,6 +75,7 @@ export const CHECK_LIST: CheckDef[] = [
   { id: 'syntax', group: 'syntax', ready: true },
   { id: 'format', group: 'syntax', ready: true },
   { id: 'structure', group: 'syntax', ready: true },
+  { id: 'mdLint', group: 'syntax', ready: true },
   { id: 'fileHealth', group: 'syntax', ready: true },
   { id: 'fullwidth', group: 'syntax', ready: true },
   { id: 'duplicate', group: 'semantic', ready: true },
