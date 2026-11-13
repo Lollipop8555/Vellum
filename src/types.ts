@@ -124,6 +124,11 @@ export interface Settings {
   checks: ChecksSettings
   /** 拼写检查的「忽略的单词」，小写存；只影响 spell / spellIdent */
   spellIgnore: string[]
+  /**
+   * PlantUML 只能联网渲染（没有纯前端实现），图表源码会离开本机。
+   * 所以默认关，且必须由用户自己打开；打开后也只在文档里真有 plantuml 围栏时才发请求。
+   */
+  plantumlRemote: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -137,4 +142,5 @@ export const DEFAULT_SETTINGS: Settings = {
   drawerWidth: 264,
   checks: { ...DEFAULT_CHECKS },
   spellIgnore: [],
+  plantumlRemote: false,
 }

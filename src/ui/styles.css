@@ -311,6 +311,15 @@ svg.eng-ico {
   margin-right: auto;
 }
 
+/* 菜单里的解释文案：跟着开关走，字号小一号、颜色压暗，别抢按钮的注意力 */
+.menu-hint {
+  padding: 2px 8px 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--c-dim);
+  text-align: left;
+}
+
 .menu-row-value {
   min-width: 34px;
   text-align: center;
@@ -1421,36 +1430,49 @@ body.is-resizing {
   border-style: dashed;
 }
 
-/* 图表（mermaid / graphviz）：先显示源码，画好之后替换成图 */
+/* 图表（mermaid / graphviz / plantuml）：先显示源码，画好之后替换成图 */
 .mermaid-block,
-.graphviz-block {
+.graphviz-block,
+.plantuml-block {
   margin: 1em 0;
   text-align: center;
   overflow-x: auto;
 }
 
 .mermaid-block svg,
-.graphviz-block svg {
+.graphviz-block svg,
+.plantuml-block img {
   max-width: 100%;
   height: auto;
 }
 
 .mermaid-block .mermaid-source,
-.graphviz-block .graphviz-source {
+.graphviz-block .graphviz-source,
+.plantuml-block .plantuml-source {
   margin: 0;
   text-align: left;
 }
 
 .mermaid-block.is-error .mermaid-source,
-.graphviz-block.is-error .graphviz-source {
+.graphviz-block.is-error .graphviz-source,
+.plantuml-block.is-error .plantuml-source {
   color: var(--c-danger);
 }
 
 /* 降级时源码还在，错误信息单独一行，别把源码挤掉 */
-.graphviz-block .graphviz-error {
+.graphviz-block .graphviz-error,
+.plantuml-block .plantuml-error {
   margin: 6px 0 0;
   font-size: 12px;
   color: var(--c-danger);
+  text-align: left;
+}
+
+/* 联网渲染的说明行（等图、或开关关着时的解释），不该抢源码的注意力 */
+.plantuml-block .plantuml-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--c-dim);
   text-align: left;
 }
 

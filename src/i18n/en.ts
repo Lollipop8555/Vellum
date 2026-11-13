@@ -444,6 +444,16 @@ export const en: Record<keyof typeof zh, string> = {
   'settings.on': 'On',
   'settings.off': 'Off',
 
+  'chart.plantuml': 'PlantUML (remote)',
+  'chart.plantumlHint': 'Diagram source is sent to plantuml.com; falls back to source when offline',
+  'chart.plantumlOff': 'PlantUML needs remote rendering — turned off in the More menu',
+  'chart.remotePending': 'Rendering remotely…',
+  'chart.remoteFailed': 'Remote rendering failed: {msg}',
+
+  'complete.chart': 'diagram',
+  'complete.code': 'syntax',
+  'complete.label': 'reference label',
+
   'format.indent': 'Indent width',
   'format.quote': 'Quotes',
   'format.semi': 'Semicolons',

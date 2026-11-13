@@ -61,7 +61,30 @@ const graphviz: BlockRenderer = {
   },
 }
 
-const RENDERERS: readonly BlockRenderer[] = [mermaid, graphviz]
+const plantuml: BlockRenderer = {
+  // `plantuml` 是工具名，`puml` 是它的标准扩展名
+  langs: ['plantuml', 'puml'],
+  render(node) {
+    return {
+      type: 'element',
+      tagName: 'div',
+      properties: {
+        className: ['plantuml-block'],
+        dataPlantuml: encodeURIComponent(node.value),
+      },
+      children: [
+        {
+          type: 'element',
+          tagName: 'pre',
+          properties: { className: ['plantuml-source'] },
+          children: [{ type: 'text', value: node.value }],
+        },
+      ],
+    }
+  },
+}
+
+const RENDERERS: readonly BlockRenderer[] = [mermaid, graphviz, plantuml]
 
 const INDEX = new Map<string, BlockRenderer>()
 for (const renderer of RENDERERS) {

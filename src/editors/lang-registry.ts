@@ -1,7 +1,7 @@
 import type { Extension } from '@codemirror/state'
 import type { StreamParser } from '@codemirror/streamparser'
 import { StreamLanguage } from '@codemirror/language'
-import { markdown } from '@codemirror/lang-markdown'
+import { markdownSupport } from './md-lang'
 import { javascript } from '@codemirror/lang-javascript'
 import { json } from '@codemirror/lang-json'
 import { html } from '@codemirror/lang-html'
@@ -72,7 +72,8 @@ export const LANG_LIST = [
   { id: 'yaml', label: 'YAML', mono: 'yaml', ext: ['yml', 'yaml'], cm: () => yaml() },
   { id: 'toml', label: 'TOML', mono: null, ext: ['toml'], stream: legacy(() => import('@codemirror/legacy-modes/mode/toml.js'), 'toml') },
   { id: 'xml', label: 'XML', mono: 'xml', ext: ['xml', 'svg', 'plist', 'xsd', 'xsl', 'xslt', 'wsdl', 'rss', 'atom'], cm: () => xml() },
-  { id: 'markdown', label: 'Markdown', mono: 'markdown', ext: ['md', 'markdown', 'mdx', 'mdown'], cm: () => markdown() },
+  // Markdown 除了自己的语法，还要知道围栏里嵌什么语言、以及补全怎么给（见 md-lang.ts）
+  { id: 'markdown', label: 'Markdown', mono: 'markdown', ext: ['md', 'markdown', 'mdx', 'mdown'], cm: () => markdownSupport(allLangDefs()) },
 
   { id: 'dockerfile', label: 'Dockerfile', mono: 'dockerfile', ext: ['dockerfile'], files: ['dockerfile', 'containerfile'], stream: legacy(() => import('@codemirror/legacy-modes/mode/dockerfile.js'), 'dockerFile') },
   { id: 'cmake', label: 'CMake', mono: null, ext: ['cmake'], files: ['cmakelists.txt'], stream: legacy(() => import('@codemirror/legacy-modes/mode/cmake.js'), 'cmake') },
@@ -169,6 +170,15 @@ export const LANG_LIST = [
 ] as const satisfies readonly LangDef[]
 
 export type LangId = (typeof LANG_LIST)[number]['id']
+
+/**
+ * 语言表自己要用语言表（Markdown 的围栏语言名来自表内），
+ * 直接写 `LANG_LIST` 会让 TS 掉进「自己引用自己」的类型推断循环。
+ * 绕一层的代价是一个函数声明，换来整张表仍然有精确类型。
+ */
+function allLangDefs(): readonly LangDef[] {
+  return LANG_LIST
+}
 
 const BY_ID = new Map<string, LangDef>(LANG_LIST.map((d) => [d.id, d as LangDef]))
 

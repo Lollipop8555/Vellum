@@ -672,6 +672,30 @@ function openMoreMenu(anchor: HTMLElement) {
   }
   menu.appendChild(accent)
 
+  // PlantUML 是唯一会把内容发到机器外的能力：开关和「发去哪儿」必须同屏可见，
+  // 不能只藏在 tooltip 里
+  const plantuml = document.createElement('button')
+  plantuml.className = 'btn'
+  plantuml.style.cssText = 'width:100%;justify-content:flex-start'
+  const paintPlantuml = () => {
+    plantuml.textContent = `${t('chart.plantuml')} · ${
+      getSettings().plantumlRemote ? t('settings.on') : t('settings.off')
+    }`
+  }
+  paintPlantuml()
+  plantuml.onclick = () => {
+    updateSettings({ plantumlRemote: !getSettings().plantumlRemote })
+    paintPlantuml()
+    // 立刻重画：否则已画好的图/源码块要等到下次编辑才变
+    void renderPreviewNow()
+  }
+  menu.appendChild(plantuml)
+
+  const plantumlHint = document.createElement('div')
+  plantumlHint.className = 'menu-hint'
+  plantumlHint.textContent = t('chart.plantumlHint')
+  menu.appendChild(plantumlHint)
+
   document.body.appendChild(menu)
   setTimeout(() => document.addEventListener('click', outside, true), 0)
 }
@@ -2890,14 +2914,14 @@ async function renderPreviewNow(): Promise<void> {
 }
 
 /** 预览里的图表语言；新增图表库时只改这一处 */
-const DIAGRAM_SELECTOR = '.mermaid-block, .graphviz-block'
+const DIAGRAM_SELECTOR = '.mermaid-block, .graphviz-block, .plantuml-block'
 
 /**
  * 把占位块画成图。
  *
- * 两个引擎都按「文档里真有才加载」处理：mermaid 4MB、viz 1.2MB，
- * 首屏包不该为没出现的图表付钱。顺序固定 mermaid 先，纯属历史顺序，
- * 两者互不依赖。
+ * 三个引擎都按「文档里真有才加载」处理：mermaid 4MB、viz 1.2MB，
+ * 首屏包不该为没出现的图表付钱。顺序固定 mermaid → graphviz → plantuml，
+ * 纯属历史顺序；plantuml 放最后是因为它最慢（要等网络）。
  */
 async function hydrateDiagrams(body: HTMLElement, seq: number) {
   const theme = currentTheme()
@@ -2910,6 +2934,11 @@ async function hydrateDiagrams(body: HTMLElement, seq: number) {
     const { renderGraphvizBlocks } = await import('../ui/graphviz')
     if (seq !== previewSeq || !state.previewOpen) return
     await renderGraphvizBlocks(body, theme)
+  }
+  if (body.querySelector('.plantuml-block')) {
+    const { renderPlantumlBlocks } = await import('../ui/plantuml')
+    if (seq !== previewSeq || !state.previewOpen) return
+    await renderPlantumlBlocks(body, theme)
   }
 }
 

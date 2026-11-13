@@ -442,6 +442,18 @@ export const zh = {
   'settings.on': '开',
   'settings.off': '关',
 
+  'chart.plantuml': 'PlantUML 联网渲染',
+  // 这句话必须一直在菜单里，不能塞进 tooltip：用户点之前就该知道源码会出门
+  'chart.plantumlHint': '开启后图表源码会发送到 plantuml.com，断网时退回源码',
+  'chart.plantumlOff': 'PlantUML 需要联网渲染，已在「更多」菜单里关闭',
+  'chart.remotePending': '正在联网渲染…',
+  'chart.remoteFailed': '联网渲染失败：{msg}',
+
+  // 补全列表里的次要说明，跟着条目右侧显示
+  'complete.chart': '图表渲染',
+  'complete.code': '代码高亮',
+  'complete.label': '引用标签',
+
   'format.indent': '缩进宽度',
   'format.quote': '引号',
   'format.semi': '分号',
