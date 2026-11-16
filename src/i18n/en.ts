@@ -51,6 +51,12 @@ export const en: Record<keyof typeof zh, string> = {
   'rail.diff': 'Compare with snapshot',
   'rail.diffFile': 'Compare with another file',
   'rail.tools': 'Encode tools',
+  'rail.prefetchIdle': 'Download the offline pack so it works without a network',
+  'rail.prefetchBusy': 'Preparing the offline pack: {pct}%',
+  'rail.prefetchPaused': 'Paused — click to continue',
+  'rail.prefetchFailed': '{n} items failed — click to retry',
+  'rail.prefetchError': 'Could not download the offline pack — click to retry',
+  'rail.prefetchReady': 'Offline pack ready — works without a network',
 
   'empty.title': 'Open a file to begin',
   'empty.hint': 'Drop a file here, or import one of the ways below.',
@@ -378,6 +384,7 @@ export const en: Record<keyof typeof zh, string> = {
   'lang.onlyEngine': 'Only {engine} has a grammar — picking this also switches engines',
   'confirm.switchEngine': '“{lang}” is only supported by {engine}. Switch to {engine} now?',
   'toast.engineSwitched': 'Switched to {engine}',
+  'toast.engineFallback': 'Monaco is not cached yet (or you are offline) — kept CodeMirror',
   'confirm.bigEngine': 'This file is in large-file mode. Switching engines reloads the whole document and may be slow. Continue?',
   'confirm.hugeBody':
     'This file is {size}, above {limit}. It opens read-only and holds the whole document in memory, which may be slow or stall on low-end machines. Open it anyway?',

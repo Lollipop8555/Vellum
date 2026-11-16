@@ -49,6 +49,12 @@ export const zh = {
   'rail.diff': '与历史版本对比',
   'rail.diffFile': '与另一个文件对比',
   'rail.tools': '编解码工具',
+  'rail.prefetchIdle': '下载离线包，断网也能用',
+  'rail.prefetchBusy': '正在准备离线包：{pct}%',
+  'rail.prefetchPaused': '已暂停，点击继续',
+  'rail.prefetchFailed': '{n} 项未完成，点击重试',
+  'rail.prefetchError': '离线包下载失败，点击重试',
+  'rail.prefetchReady': '离线包已就绪，断网也能用',
 
 
   'empty.title': '打开一个文件开始',
@@ -375,6 +381,7 @@ export const zh = {
   'lang.onlyEngine': '仅 {engine} 有语法，选中会一起切换引擎',
   'confirm.switchEngine': '「{lang}」只有 {engine} 能着色，现在切到 {engine} 吗？',
   'toast.engineSwitched': '已切换到 {engine}',
+  'toast.engineFallback': 'Monaco 还没下载到本机（或当前离线），已改用 CodeMirror',
   'confirm.bigEngine': '该文件已进入大文件模式，切换引擎会重新加载全部内容，可能明显卡顿。仍要继续吗？',
   'confirm.hugeBody':
     '文件大小 {size}，超过 {limit}。将以只读方式打开，内存占用较高，低配置机器可能变慢甚至卡顿。仍要导入吗？',

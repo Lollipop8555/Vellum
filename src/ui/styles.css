@@ -505,6 +505,104 @@ svg.eng-ico {
   color: var(--c-warn);
 }
 
+/* ---------- 离线包进度环 ---------- */
+
+/* 图标的 18px 规则不适用于环，这里必须盖回去 */
+.rail-fetch svg.fetch-ring {
+  width: 26px;
+  height: 26px;
+  transform: rotate(-90deg);
+}
+
+.rail-fetch .ring-track {
+  fill: none;
+  stroke: var(--c-border);
+  stroke-width: 3;
+}
+
+.rail-fetch .ring-fill {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  /* 2πr，r = 15；和磁盘环同一套几何 */
+  stroke-dasharray: 94.25;
+  stroke-dashoffset: 94.25;
+  transition: stroke-dashoffset 260ms ease;
+}
+
+.rail-fetch .fetch-glyph {
+  position: absolute;
+  font-family: var(--mono-font);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+  color: var(--c-faint);
+  transition: color 160ms ease;
+}
+
+.rail-fetch[data-state='busy'] {
+  color: var(--c-accent);
+}
+
+.rail-fetch[data-state='busy'] .fetch-glyph {
+  color: var(--c-accent);
+}
+
+.rail-fetch[data-state='error'] {
+  color: var(--c-warn);
+}
+
+.rail-fetch[data-state='error'] .fetch-glyph {
+  color: var(--c-warn);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+/* 就绪态：环和 {} 一起退场，只留一个安静的点 */
+.rail-fetch .fetch-dot {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 240ms ease, transform 240ms ease, box-shadow 240ms ease;
+}
+
+.rail-fetch[data-state='ready'] {
+  color: var(--c-accent);
+}
+
+.rail-fetch[data-state='ready'] .fetch-ring,
+.rail-fetch[data-state='ready'] .fetch-glyph {
+  opacity: 0;
+}
+
+.rail-fetch[data-state='ready'] .fetch-dot {
+  opacity: 0.9;
+  transform: scale(1);
+  box-shadow: 0 0 0 3px var(--c-accent-weak);
+}
+
+.rail-fetch[data-state='ready']:hover .fetch-dot {
+  transform: scale(1.25);
+}
+
+/* hidden 是 UA 样式，优先级低于上面的 .rail-btn，得显式关掉 */
+.rail-fetch[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-fetch .ring-fill,
+  .rail-fetch .fetch-glyph,
+  .rail-fetch .fetch-dot {
+    transition: none;
+  }
+}
+
 .rail-btn {
   /* 计数徽标用绝对定位挂在角上 */
   position: relative;

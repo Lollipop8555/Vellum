@@ -79,6 +79,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          /**
+           * Vite 给每个 `import()` 注入的 __vitePreload helper 必须留在入口侧。
+           * 它体积只有几百字节，但被入口和 monaco 同时依赖；一旦默认归属被算进
+           * monaco 的强制分组，入口就会 `import{_ as ue}from"./monaco-xxx.js"`，
+           * 于是首屏白等 3.5MB —— 引擎本身的动态加载完全没起作用。
+           */
+          if (id.includes('preload-helper')) return 'vite-preload'
           if (id.includes('monaco-editor')) return 'monaco'
           return undefined
         },

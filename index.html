@@ -213,6 +213,15 @@
             </svg>
           </button>
           <span class="rail-grow"></span>
+          <!-- 离线包：idle 是可点的暗环，下载中走弧，就绪后收成一个小点 -->
+          <button class="rail-btn rail-fetch" id="railFetch" type="button" data-state="idle" hidden>
+            <svg class="fetch-ring" viewBox="0 0 36 36" aria-hidden="true">
+              <circle class="ring-track" cx="18" cy="18" r="15" />
+              <circle class="ring-fill" id="railFetchRing" cx="18" cy="18" r="15" />
+            </svg>
+            <span class="fetch-glyph" aria-hidden="true">{}</span>
+            <span class="fetch-dot" aria-hidden="true"></span>
+          </button>
           <!-- 库内占用环：纯指示，不可点；精确数字在文件页底部 -->
           <div class="rail-disk" id="railDisk" aria-hidden="true">
             <svg viewBox="0 0 36 36">

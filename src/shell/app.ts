@@ -75,6 +75,7 @@ import { Drawer } from '../ui/layout'
 import { trackViewportHeight } from '../ui/viewport'
 import { applyTheme } from '../ui/theme'
 import { toast } from '../ui/toast'
+import { createPrefetcher, ringOffset, type PrefetchProgress } from './prefetch'
 import { renderMarkdown } from '../ui/markdown'
 import { createFindBar, type FindBar } from '../ui/findbar'
 import * as sb from '../ui/statusbar'
@@ -273,10 +274,11 @@ export async function startApp() {
   })
 
   void store.requestPersistence()
-  prefetchMonaco()
+  wirePrefetch()
 
   onLangChange(() => {
     updateLangButton()
+    renderPrefetch(prefetcher.state())
     // 标题是动态拼的分区名，静态文本应用不到，得单独刷一次
     syncLeftPanel()
     refreshMeta()
@@ -1112,10 +1114,24 @@ async function mountEditor(text: string, offset = 0) {
   state.editor = null
   host.innerHTML = ''
 
-  const Adapter =
-    state.engineId === 'monaco'
-      ? (await import('../editors/monaco')).MonacoAdapter
-      : CodeMirrorAdapter
+  // Monaco 是按需下载的：断网且离线包还没下到它时，import() 会失败。
+  // 这里降级回 CodeMirror 而不是让调用方吃一个未处理异常——否则编辑区会一直
+  // 停在切换时的半透明状态，看着像卡死。
+  let Adapter: new () => EditorAdapter = CodeMirrorAdapter
+  if (state.engineId === 'monaco') {
+    try {
+      Adapter = (await import('../editors/monaco')).MonacoAdapter
+    } catch {
+      state.engineId = 'cm'
+      updateSettings({ defaultEngine: 'cm' })
+      if (rec.engine !== 'cm') {
+        rec.engine = 'cm'
+        void store.putNode(toNode(rec))
+      }
+      updateEngineSeg()
+      toast(t('toast.engineFallback'), 'error')
+    }
+  }
 
   const settings = getSettings()
   const full = state.mode === 'full'
@@ -1596,18 +1612,62 @@ async function switchEngine(id: EngineId) {
 
   const host = el('editorHost')
   host.style.opacity = '0.35'
-  await mountEditor(value, offset)
-  host.style.opacity = '1'
+  try {
+    await mountEditor(value, offset)
+  } finally {
+    // 无论成功、降级还是抛错，都不能把编辑区留在半透明
+    host.style.opacity = '1'
+  }
   // 空白页没有文件记录，mountEditor 会提前返回，分段控件得自己刷一次
   updateEngineSeg()
   if (state.current) refreshMeta()
 }
 
-function prefetchMonaco() {
-  const idle = window.requestIdleCallback ?? ((fn: () => void) => window.setTimeout(fn, 1500))
-  idle(() => {
-    void import('../editors/monaco').then(() => undefined)
+/* ---------------------------------------------------------- 离线包（rail 环） */
+
+const prefetcher = createPrefetcher(renderPrefetch)
+
+function renderPrefetch(p: PrefetchProgress) {
+  const btn = el<HTMLButtonElement>('railFetch')
+  if (!btn) return
+  btn.dataset.state = p.phase
+  const ring = document.getElementById('railFetchRing')
+  if (ring instanceof SVGCircleElement) ring.style.strokeDashoffset = ringOffset(p.ratio)
+
+  const pct = Math.round(p.ratio * 100)
+  const tip =
+    p.phase === 'busy'
+      ? t('rail.prefetchBusy', { pct })
+      : p.phase === 'paused'
+        ? t('rail.prefetchPaused')
+        : p.phase === 'error'
+          ? p.failed > 0
+            ? t('rail.prefetchFailed', { n: p.failed })
+            : t('rail.prefetchError')
+          : p.phase === 'ready'
+            ? t('rail.prefetchReady')
+            : t('rail.prefetchIdle')
+  btn.title = tip
+  btn.setAttribute('aria-label', tip)
+
+  const glyph = btn.querySelector<HTMLElement>('.fetch-glyph')
+  if (glyph) glyph.textContent = p.phase === 'error' ? '!' : '{}'
+}
+
+function wirePrefetch() {
+  // dev 没有 Service Worker，环会永远停在 idle，不如不出现
+  if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return
+  const btn = el<HTMLButtonElement>('railFetch')
+  btn.hidden = false
+  renderPrefetch(prefetcher.state())
+  btn.addEventListener('click', () => {
+    if (prefetcher.state().phase === 'ready') {
+      toast(t('rail.prefetchReady'))
+      return
+    }
+    prefetcher.toggle()
   })
+  prefetcher.autoStart()
 }
 
 /* ------------------------------------------------------------ 其它开关 */

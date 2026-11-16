@@ -14,8 +14,8 @@
  * 所以根路径部署和 GitHub Pages 的 /<repo>/ 项目页都不用改这里。
  */
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync, statSync } from 'node:fs'
+import { readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -66,6 +66,79 @@ while (queue.length) {
   }
   queue.push(...(entry.css ?? []))
 }
+
+/* ---------------------------------------------------- 后台预取清单（分段） */
+
+/**
+ * 外壳之外的一切产物，就是「用户进来之后后台该补的部分」。
+ *
+ * 分段按 manifest 的键（源文件路径）判定，共享 chunk 靠 BFS 继承所属段：
+ * 同一个 chunk 被 mermaid 与语言包同时引用时，按 engine > editor > preview 取先到的，
+ * 保证大块落在它真正服务的段里。规则没覆盖到的产物归 preview 并打日志——
+ * 静默兜底会让「预取进度」悄悄失真。
+ */
+const RANK = { engine: 0, editor: 1, preview: 2 }
+
+function segmentOf(key) {
+  if (key === 'src/editors/monaco.ts' || /(^|[/_-])monaco[-.]/.test(key) || /editor\.worker/.test(key)) {
+    return 'engine'
+  }
+  if (key.startsWith('vendor/@codemirror/legacy-modes/')) return 'editor'
+  if (key.startsWith('src/diagnostics/dict/')) return 'editor'
+  if (key.startsWith('node_modules/prettier/')) return 'editor'
+  if (key.startsWith('node_modules/sql-formatter/')) return 'editor'
+  if (key.startsWith('node_modules/xml-formatter/')) return 'editor'
+  if (/mermaid|graphviz|plantuml/.test(key) || key.startsWith('src/ui/markdown')) return 'preview'
+  return null
+}
+
+const entryByFile = new Map(Object.values(manifest).map((entry) => [entry.file, entry]))
+const segmentOfFile = new Map()
+const pending = []
+
+for (const [key, entry] of Object.entries(manifest)) {
+  const seg = segmentOf(key) ?? segmentOf(entry.file)
+  if (seg) pending.push([entry.file, seg])
+}
+pending.sort((a, b) => RANK[a[1]] - RANK[b[1]])
+
+while (pending.length) {
+  const [file, seg] = pending.shift()
+  if (files.has(file)) continue
+  const seenSeg = segmentOfFile.get(file)
+  if (seenSeg !== undefined && RANK[seenSeg] <= RANK[seg]) continue
+  segmentOfFile.set(file, seg)
+
+  const entry = entryByFile.get(file)
+  if (!entry) continue
+  for (const dep of [...(entry.imports ?? []), ...(entry.dynamicImports ?? [])]) {
+    const target = manifest[dep]
+    if (target) pending.push([target.file, seg])
+  }
+  for (const css of entry.css ?? []) pending.push([css, seg])
+}
+
+const lazyFiles = (await readdir(join(DIST, 'assets')))
+  .filter((file) => /\.(js|css)$/.test(file))
+  .map((file) => `assets/${file}`)
+  .filter((file) => !files.has(file))
+  .sort()
+
+const segments = { engine: [], editor: [], preview: [] }
+const unlabeled = []
+for (const file of lazyFiles) {
+  // worker 产物由 Vite 单独发射，不进 manifest，BFS 到不了它，这里按产物名补一次
+  const seg = segmentOfFile.get(file) ?? segmentOf(file.replace(/^assets\//, ''))
+  if (!seg) unlabeled.push(file)
+  segments[seg ?? 'preview'].push({ u: `./${file}`, b: statSync(join(DIST, file)).size })
+}
+if (unlabeled.length) {
+  console.warn(`[sw] ${unlabeled.length} 个产物没有分段规则，归入 preview：${unlabeled.join(', ')}`)
+}
+
+await writeFile(join(DIST, 'prefetch.json'), JSON.stringify({ segments }))
+// 清单本身要离线可读：它决定「后台还要补什么」，断网时读不到就没法判断进度
+files.add('prefetch.json')
 
 const missing = [...files].filter((file) => !existsSync(join(DIST, file)))
 if (missing.length) die(`清单里的文件不存在：${missing.join(', ')}`)

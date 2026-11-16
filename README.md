@@ -173,6 +173,17 @@ npm run preview
 
 清单不手写：`vite build` 之后由 `scripts/build-sw.mjs` 读 `dist/.vite/manifest.json`，从 `index.html` 引用的 chunk 出发沿静态 import 走闭包，再把清单和构建号写进 `dist/sw.js`。每次发布都换构建号，旧外壳缓存在 `activate` 里清掉。清单里的地址全是相对路径，根路径部署与 `/<repo>/` 项目页都不用额外配置。
 
+### 后台离线包（rail 上那个 `{}` 环）
+
+首屏只加载外壳（入口 chunk 里的 CodeMirror、shell、i18n、存储），Monaco、语言包、图表渲染器都在之后补，左侧 rail 底部的环就是它的仪表：
+
+- **三段推进**：引擎（Monaco + worker + 样式）→ 编辑能力（CodeMirror 语言包、拼写词典、Prettier 插件）→ 预览图表（markdown、mermaid、graphviz、plantuml 及其全部子图）。每段占环 1/3，段内按文件推进。
+- **补的是字节，不是模块**：用 `fetch` 写进 `vellum-runtime`，不用 `import()`。`import()` 会真的解析执行，Monaco 那 3.5MB 会卡主线程；字节先落盘，真正的 `import()` 等用户切引擎/开预览时发生，直接命中缓存。
+- **清单**：`build-sw.mjs` 顺带产出 `dist/prefetch.json`。分段按 manifest 的源文件路径判定（`vendor/@codemirror/legacy-modes/*` → 编辑能力，`mermaid|graphviz|plantuml` → 预览），共享 chunk 靠 BFS 继承所属段；规则漏掉的产物会打日志，避免进度悄悄失真。
+- **什么时候跑**：首访不跑（和首屏抢带宽），省流量（`saveData`）或 2G/3G 也不跑——此时环停在 idle，点一下才开始。回访在 `load` 之后、浏览器空闲时默默开跑，跑完环收成一个 4px 的点。
+- **失败与暂停**：单项失败静默重试一次，仍失败则进 error 态（环变警示色、`{}` 换 `!`、title 写明项数），点击重试只补没落盘的部分。下载中点环是暂停，再点续传。
+- **与离线的关系**：预取只在 Service Worker 接管后启动，且每项落盘后再自己确认一次，所以环走到 100% 就是真的「断网全可用」。没走完就断网时，未缓存的部分会失败；切 Monaco 会降级回 CodeMirror 并给提示，不会卡在半透明编辑区。
+
 `npm run dev` 不注册 Service Worker（否则 HMR 会一直命中缓存）。验证离线用 `npm run build` + `npm run preview`：DevTools → Application 里确认 `sw.js` 已激活，Network 勾 Offline 再刷新。
 
 ## 目录
