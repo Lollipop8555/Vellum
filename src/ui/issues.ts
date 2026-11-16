@@ -1,6 +1,7 @@
 import { t, type MessageKey } from '../i18n'
 import { MAX_ISSUES } from '../diagnostics'
 import { languageMatrix, type CheckAvailability } from '../diagnostics/registry'
+import { MAX_PER_RULE, MD_RULES } from '../diagnostics/providers/mdLint'
 import {
   CHECK_LIST,
   issueText,
@@ -36,6 +37,12 @@ export interface IssuesState {
   naReason: 'planned' | 'noParser' | 'langOnly' | 'ext' | null
   /** 拼写检查的忽略词，逗号分隔展示 */
   spellIgnore: string[]
+  /** Markdown 细则里当前生效的规则号；决定逐条复选框的勾选状态 */
+  mdRules: string[]
+  /** 每条 Markdown 细则在这次结果里报了多少条，用来在开关旁边标数 */
+  mdCounts: Record<string, number>
+  /** MD013 的行长阈值 */
+  mdLineLength: number
   /** 词典加载失败：拼写项一条都报不出来，空态要说清楚而不是「无问题」 */
   dictFailed: boolean
   /** 当前文件的语言，矩阵里置顶并高亮这一行 */
@@ -63,11 +70,18 @@ export interface IssuesHandlers {
   onRerun(): void
   /** 忽略词输入框改了（提交时一次性给整串，解析在 app 侧做） */
   onSpellIgnoreChange(raw: string): void
+  /** 逐条开关某条 Markdown 细则 */
+  onToggleMdRule(id: string): void
+  /** MD013 行长阈值改了（提交时给整串，解析与夹取在 app 侧做） */
+  onMdLineLengthChange(raw: string): void
 }
 
 /** 行号表只维护一份：面板一次渲染最多 200 条，逐条扫描正文会很浪费 */
 let lineCacheText = ''
 let lineCacheStarts: number[] = []
+
+/** Markdown 细则那一折是展开还是收起：面板整块重建时要接得上 */
+let rulesOpen = false
 
 function lineStarts(text: string): number[] {
   if (text === lineCacheText) return lineCacheStarts
@@ -134,6 +148,63 @@ function buildOptions(state: IssuesState, handlers: IssuesHandlers): HTMLElement
       section.append(row)
     }
     box.append(section)
+  }
+
+  // Markdown 风格细则：只在勾了 mdLint 且当前文件是 Markdown 时才有意义。
+  // 二十条摊开会把上面的检查项挤下去，折起来只留一行摘要。
+  if (state.checks.mdLint && state.lang === 'markdown') {
+    const on = new Set(state.mdRules)
+    const details = el('details', 'issues-rules')
+    details.open = rulesOpen
+    // 面板每次都是整块重建，展开状态得自己记住，否则点一条就折回去
+    details.addEventListener('toggle', () => {
+      rulesOpen = details.open
+    })
+    const summary = el('summary', 'issues-check-title')
+    summary.append(
+      el('span', undefined, t('issues.mdRules')),
+      el('span', 'issues-rules-count', `${on.size}/${MD_RULES.length}`),
+    )
+    details.append(summary)
+    const list = el('div', 'issues-rules-list')
+    for (const rule of MD_RULES) {
+      const row = el('label', 'issues-rule')
+      const input = el('input')
+      input.type = 'checkbox'
+      input.checked = on.has(rule.id)
+      input.dataset.mdRule = rule.id
+      input.addEventListener('change', () => {
+        handlers.onToggleMdRule(rule.id)
+        // 面板整块重建过，把焦点还给同一行，键盘连着勾不会断
+        document.querySelector<HTMLInputElement>(`.issues-rule input[data-md-rule="${rule.id}"]`)?.focus()
+      })
+      const hits = state.mdCounts[rule.id] ?? 0
+      row.append(
+        input,
+        el('code', 'issues-rule-id', rule.id),
+        el('span', 'issues-rule-text', t(`md.${rule.id}` as MessageKey)),
+      )
+      // 报了几条就标几，一眼看出「这条规则在我这篇文档里吵不吵」。
+      // 单条规则有产量上限，顶格时标 20+，别让人以为全文只有 20 条
+      if (hits > 0) {
+        row.append(el('span', 'issues-rule-hits', hits >= MAX_PER_RULE ? `${hits}+` : String(hits)))
+      }
+      row.title = t(`md.${rule.id}` as MessageKey)
+      list.append(row)
+      if (rule.id === 'MD013') {
+        const width = el('input', 'issues-check-input issues-rule-width')
+        width.type = 'number'
+        width.min = '40'
+        width.max = '400'
+        width.value = String(state.mdLineLength)
+        width.disabled = !on.has(rule.id)
+        width.title = t('issues.mdLineLength')
+        width.addEventListener('change', () => handlers.onMdLineLengthChange(width.value))
+        list.append(width)
+      }
+    }
+    details.append(list)
+    box.append(details)
   }
 
   // 拼写的「忽略的单词」：只在勾了拼写时才值得占地方

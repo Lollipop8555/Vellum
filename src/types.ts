@@ -125,6 +125,13 @@ export interface Settings {
   /** 拼写检查的「忽略的单词」，小写存；只影响 spell / spellIdent */
   spellIgnore: string[]
   /**
+   * Markdown 细则的逐条开关（MD009…MD047）。只存和默认值不同的那几条，
+   * 缺省值仍由 MD_RULES 决定 —— 以后调默认值，没动过的规则会跟着走。
+   */
+  mdRules: Record<string, boolean>
+  /** MD013 的行长阈值；只在 MD013 打开时生效 */
+  mdLineLength: number
+  /**
    * PlantUML 只能联网渲染（没有纯前端实现），图表源码会离开本机。
    * 所以默认关，且必须由用户自己打开；打开后也只在文档里真有 plantuml 围栏时才发请求。
    */
@@ -142,5 +149,8 @@ export const DEFAULT_SETTINGS: Settings = {
   drawerWidth: 264,
   checks: { ...DEFAULT_CHECKS },
   spellIgnore: [],
+  mdRules: {},
+  // 与 providers/mdLint.ts 的 DEFAULT_MAX_LINE 保持一致；设置层不依赖检查实现
+  mdLineLength: 120,
   plantumlRemote: false,
 }

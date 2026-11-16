@@ -6,6 +6,7 @@
  * 再深的结构在侧栏里缩进已经吃掉宽度，列表反而不如平铺好读。
  */
 import type { LangId } from '../editors/languages'
+import { isMarkdownLike } from '../doc-views'
 
 export interface OutlineItem {
   label: string
@@ -155,7 +156,7 @@ function markdownOutline(text: string): OutlineItem[] {
 }
 
 export function extractOutline(text: string, lang: LangId): OutlineItem[] {
-  if (lang === 'markdown') return markdownOutline(text)
+  if (isMarkdownLike(lang)) return markdownOutline(text)
 
   const rules = RULES[lang]
   if (!rules?.length) return []

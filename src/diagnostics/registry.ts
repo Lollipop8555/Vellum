@@ -1,4 +1,5 @@
 import { cmSupports, monoSupports } from '../editors/lang-registry'
+import { isMarkdownLike } from '../doc-views'
 import { LANG_LIST, type LangId } from '../editors/languages'
 import type { EngineId } from '../types'
 import { BALANCE_LANGS, parserFor } from './parse'
@@ -62,14 +63,14 @@ export function checkAvailability(kind: CheckKind, lang: LangId, name: string): 
       return { ok: false, reason: 'langOnly' }
 
     case 'structure':
-      if (lang === 'json' || lang === 'yaml' || lang === 'markdown') return OK
+      if (lang === 'json' || lang === 'yaml' || isMarkdownLike(lang)) return OK
       if (PLAIN_HTML_EXT.has(extOf(name))) return OK
       if (DSV_EXT.has(extOf(name))) return OK
       return { ok: false, reason: 'langOnly' }
 
     case 'mdLint':
       // 规则本身就是 Markdown 语法，别的语言没有「标题跳级」「围栏空行」这些概念
-      return lang === 'markdown' ? OK : { ok: false, reason: 'langOnly' }
+      return isMarkdownLike(lang) ? OK : { ok: false, reason: 'langOnly' }
 
     case 'duplicate':
     case 'arity':
@@ -96,7 +97,7 @@ export function checkAvailability(kind: CheckKind, lang: LangId, name: string): 
     case 'fullwidth':
       // 全角标点在 Markdown/文本里是正常标点，只在代码里有意义；
       // 而且必须靠语法树排除注释与字符串，没有树就不做（否则中文注释会满屏黄线）
-      if (lang === 'markdown' || lang === 'text' || lang === 'logcat') {
+      if (isMarkdownLike(lang) || lang === 'text' || lang === 'logcat') {
         return { ok: false, reason: 'langOnly' }
       }
       return hasParser(lang, name) ? OK : { ok: false, reason: 'noParser' }

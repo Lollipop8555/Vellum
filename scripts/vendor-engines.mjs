@@ -55,6 +55,13 @@ const ROOTS = [
   'highlight.js',
   'mermaid',
   '@viz-js/viz',
+  // 导图渲染引擎。只 vendor view：数据树由项目自己的 remark
+  // 管线构建，markmap-lib 会带进 markdown-it + cheerio + prismjs + katex 0.16，
+  // 与本项目已有的 katex 0.18 打架，收益为零
+  'markmap-view',
+  // markmap-view 把 markmap-common 声明成 peerDependency，dependencies 闭包里没有它，
+  // 漏了会在运行期 `import ... from 'markmap-common'` 直接报模块找不到
+  'markmap-common',
 ]
 const SCOPES = ['@codemirror/', '@lezer/', '@marijn/']
 const isEngine = (name) => ROOTS.includes(name) || SCOPES.some((s) => name.startsWith(s))
@@ -169,20 +176,26 @@ const mode = process.argv.includes('--check')
   ? 'check'
   : process.argv.includes('--pull')
     ? 'pull'
-    : 'sync'
+    : process.argv.includes('--add')
+      ? 'add'
+      : 'sync'
 
 const readJson = async (file) => JSON.parse(await readFile(file, 'utf8'))
 
 /* ------------------------------------------------------------ 收集 */
 
-async function collectFromNodeModules() {
+async function collectFromNodeModules({ onlyPresent = false } = {}) {
   const found = new Map()
 
   async function add(name) {
     if (found.has(name)) return
     const dir = path.join(NM, name)
     const pkgFile = path.join(dir, 'package.json')
-    if (!existsSync(pkgFile)) throw new Error(`node_modules 中缺少 ${name}`)
+    if (!existsSync(pkgFile)) {
+      // --add 只补新增包：没装的引擎（codemirror 等已在 vendor 里）直接跳过
+      if (onlyPresent) return
+      throw new Error(`node_modules 中缺少 ${name}`)
+    }
     const pkg = await readJson(pkgFile)
     found.set(name, { version: pkg.version, dir })
     for (const dep of Object.keys(pkg.dependencies ?? {})) {
@@ -195,6 +208,8 @@ async function collectFromNodeModules() {
       await add(entry.name)
     } else if (entry.isDirectory() && entry.name.startsWith('@')) {
       for (const child of await readdir(path.join(NM, entry.name), { withFileTypes: true })) {
+        // npm 中断安装会留下 `.pkg-XXXX` / `.legacy-modes-XXXX` 形式的临时目录，不是包
+        if (child.name.startsWith('.')) continue
         const name = `${entry.name}/${child.name}`
         if (child.isDirectory() && isEngine(name)) await add(name)
       }
@@ -428,13 +443,15 @@ async function check() {
 if (mode === 'check') {
   await check()
 } else {
+  const additive = mode === 'add'
   const source = mode === 'pull'
     ? await collectFromManifest()
-    : { found: await collectFromNodeModules(), cleanup: async () => {} }
+    : { found: await collectFromNodeModules({ onlyPresent: additive }), cleanup: async () => {} }
   const found = source.found
 
-  // 先确认收全再动 vendor：否则一次空收集会把已提交的源码删光
-  const missing = ROOTS.filter((name) => !found.has(name))
+  // 先确认收全再动 vendor：否则一次空收集会把已提交的源码删光。
+  // --add 语义是「把 node_modules 里新装的包补进来」，所以缺别的根包不算失败。
+  const missing = additive ? [] : ROOTS.filter((name) => !found.has(name))
   if (!found.size || missing.length) {
     await source.cleanup()
     console.error(
@@ -447,21 +464,26 @@ if (mode === 'check') {
   }
 
   try {
-    try {
-      await rm(VENDOR, { recursive: true, force: true })
-    } catch (error) {
-      // 部分 IDE 会对大批量删除做二次确认保护（BULK_CONFIRM），
-      // 这类拦截无法在脚本内绕过，交给人工执行一次即可。
-      if (String(error?.message ?? error).includes('BULK_CONFIRM')) {
-        console.error('无法自动清空 vendor/（安全删除保护拦截）。请手动执行：rm -rf vendor 后重跑。')
-        process.exit(1)
+    if (!additive) {
+      try {
+        await rm(VENDOR, { recursive: true, force: true })
+      } catch (error) {
+        // 部分 IDE 会对大批量删除做二次确认保护（BULK_CONFIRM），
+        // 这类拦截无法在脚本内绕过，交给人工执行一次即可。
+        if (String(error?.message ?? error).includes('BULK_CONFIRM')) {
+          console.error('无法自动清空 vendor/（安全删除保护拦截）。请手动执行：rm -rf vendor 后重跑。')
+          process.exit(1)
+        }
+        throw error
       }
-      throw error
     }
 
-    const versions = {}
-    const subpaths = {}
+    // --add 从既有清单出发，只补新包；其余包原样保留
+    const previous = additive ? await readJson(MANIFEST) : null
+    const versions = { ...(previous?.packages ?? {}) }
+    const subpaths = { ...(previous?.subpaths ?? {}) }
     for (const [name, info] of [...found].sort(([a], [b]) => a.localeCompare(b))) {
+      if (additive && versions[name]) continue
       await copyPackage(name, info.dir)
       versions[name] = info.version
       // 必须按 vendor 里裁剪后的副本判断，node_modules 里的文件是全的，

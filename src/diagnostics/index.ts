@@ -5,7 +5,7 @@ import { checkAvailability, enabledChecks, hasRunnable } from './registry'
 import { balanceIssues, treeIssues } from './providers/syntax'
 import { formatIssues } from './providers/format'
 import { structureIssues } from './providers/structure'
-import { mdLintIssues } from './providers/mdLint'
+import { DEFAULT_MAX_LINE, enabledMdRules, mdLintIssues } from './providers/mdLint'
 import { fileHealthIssues, fullwidthIssues } from './providers/filehealth'
 import { arityIssues, duplicateIssues, typeArgIssues, typoIssues, unusedIssues } from './providers/symbols'
 import { spellIdentIssues, spellIssues } from './providers/spell'
@@ -32,7 +32,7 @@ export const MAX_TEXT = 512 * 1024
  * 规则版本。改了任何一条规则就 +1：缓存 key 里带着它，
  * 旧文件才不会拿着旧结果当权威（DG-09）。
  */
-export const DIAG_VERSION = 5
+export const DIAG_VERSION = 6
 
 export { contentHash } from './parse'
 export { availabilityFor, checkAvailability, extOf } from './registry'
@@ -44,6 +44,10 @@ export interface AnalyzeInput {
   checks: ChecksSettings
   /** 用户自定的「忽略的单词」，只影响拼写两项 */
   ignore?: readonly string[]
+  /** Markdown 细则的逐条开关（只存和默认值不同的），只影响 mdLint */
+  mdRules?: Record<string, boolean>
+  /** MD013 行长阈值，只影响 mdLint */
+  mdLineLength?: number
 }
 
 export interface AnalyzeResult {
@@ -64,6 +68,10 @@ export interface ProviderContext {
   symbols: () => SymTab | null
   /** 用户自定的忽略词（小写） */
   ignore: readonly string[]
+  /** Markdown 细则的逐条开关，解析成最终集合 */
+  mdRules: ReadonlySet<string>
+  /** MD013 行长阈值 */
+  mdLineLength: number
 }
 
 /**
@@ -78,7 +86,7 @@ const PROVIDERS: Partial<Record<CheckKind, (ctx: ProviderContext) => Issue[]>> =
   },
   format: ({ text, lang }) => formatIssues(text, lang),
   structure: ({ text, lang, name, tree }) => structureIssues(text, lang, name, tree),
-  mdLint: ({ text }) => mdLintIssues(text),
+  mdLint: ({ text, mdRules, mdLineLength }) => mdLintIssues(text, mdRules, { maxLine: mdLineLength }),
   fileHealth: ({ text }) => fileHealthIssues(text),
   fullwidth: ({ text, tree }) => fullwidthIssues(text, tree),
   duplicate: ({ symbols }) => {
@@ -136,7 +144,7 @@ function needsTree(kind: CheckKind, lang: LangId, name: string): boolean {
   return false
 }
 
-export function analyze({ text, lang, name, checks, ignore }: AnalyzeInput): AnalyzeResult {
+export function analyze({ text, lang, name, checks, ignore, mdRules, mdLineLength }: AnalyzeInput): AnalyzeResult {
   const supported = hasRunnable(checks, lang, name)
   if (text.length > MAX_TEXT) return { issues: [], ran: false, supported }
 
@@ -154,7 +162,16 @@ export function analyze({ text, lang, name, checks, ignore }: AnalyzeInput): Ana
     return symTab
   }
 
-  const ctx: ProviderContext = { text, lang, name, tree, symbols, ignore: ignore ?? [] }
+  const ctx: ProviderContext = {
+    text,
+    lang,
+    name,
+    tree,
+    symbols,
+    ignore: ignore ?? [],
+    mdRules: enabledMdRules(mdRules),
+    mdLineLength: mdLineLength ?? DEFAULT_MAX_LINE,
+  }
   const issues: Issue[] = []
   // 格式层的消息比语法层的「语法错误」精确得多，先收集、后压制
   const formatIssuesOut: Issue[] = []

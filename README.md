@@ -126,11 +126,11 @@ JSON / JS / TS / HTML / CSS / Markdown / YAML（Prettier）、XML（xml-formatte
 
 ## 引擎源码固定
 
-CodeMirror 与 Monaco 的源码以副本形式放在 `vendor/`，**提交进仓库**，构建和类型检查都只读这份副本：
+CodeMirror、Monaco，以及预览/导图用的渲染库（`mermaid`、`@viz-js/viz`、`markmap-view` 等）的源码都以副本形式放在 `vendor/`，**提交进仓库**，构建和类型检查都只读这份副本：
 
-- `vite.config.ts` 按 `vendor/VERSIONS.json` 生成别名，把 `@codemirror/*`、`@codemirror/legacy-modes`、`@lezer/*`、`@marijn/*`、`monaco-editor` 等指向本地副本；
+- `vite.config.ts` 按 `vendor/VERSIONS.json` 生成别名，把 `@codemirror/*`、`@codemirror/legacy-modes`、`@lezer/*`、`@marijn/*`、`monaco-editor`、`markmap-*`、`d3-*`、`mermaid` 等指向本地副本；
 - `tsconfig.json` 的 `paths` 指向同一处，所以 `node_modules` 里没有这些包也能通过类型检查与构建；
-- `package.json` 不再声明这些依赖，npm 升级或 registry 变动都影响不到已提交的产物。
+- CodeMirror / Monaco 在 `package.json` 里已不再声明，npm 升级或 registry 变动都影响不到已提交的产物（其余渲染库仍留着版本声明，给 `vendor:pull` 用）。
 
 因此引擎代码只有在显式同步并提交后才会变化。相关命令：
 
@@ -143,6 +143,22 @@ npm run vendor:check  # 离线校验版本、依赖闭包与残留目录，build
 升级某个引擎：改 `vendor/VERSIONS.json` 里对应版本 → `npm run vendor:pull` → 跑构建与 `plans/TESTING.md` 的相关项 → 提交 `vendor/` 变更。
 
 Monaco 只保留 `esm/`（`dev`、`min`、`min-maps` 是给 `<script>` 用的全量包，已剔除），`vendor/` 合计约 37MB。
+
+### 导图用的 markmap
+
+Markdown 右侧的「导图」面板不是自绘布局，用的是 [markmap](https://github.com/markmap/markmap)（MIT）的渲染引擎：
+
+| 包 | 版本 | 用途 |
+|---|---|---|
+| `markmap-view` | 0.18.13 | flextree 布局、三次贝塞尔连线、`d3-zoom` 缩放、折叠 —— 全部画法 |
+| `markmap-common` | 0.18.9 | 类型与工具函数。它被 `markmap-view` 声明成 peerDependency，不在 `dependencies` 闭包里，所以必须单独进 `ROOTS`，漏了会在运行期报「找不到模块」 |
+| `d3` / `d3-*` | 7.9.2 / 3.x | `markmap-view` 的运行时依赖，随 vendor 一起落盘（项目自己不再直接 `import` d3，缩放走引擎的 `rescale` / `fit`） |
+
+- **数据树是项目自己建的**：复用预览那条 remark 管线解析成 mdast，再压成 markmap 的 `IPureNode`（`src/ui/mindmap.ts`）。
+- **没有引 `markmap-lib`**：它的唯一用处就是产 `IPureNode`，代价是带进 markdown-it + cheerio + prismjs + katex@0.16 —— 与仓库已有的 remark 管线、katex@0.18 重复且互相打架，自己写四十行就够。
+- 节点内容走 `foreignObject`，所以文字仍由我们渲染（加粗、行内代码、代码块、表格、公式、任务列表的样式与预览同源）。
+- 引擎的默认样式（`globalCSS`）写在 svg 自带的 `<style>` 里；我们自己的 `.mm2-*` / `.markmap*` 规则在 `src/ui/styles.css`，导出 SVG 时会被抽出来内联进文件。
+- 升级：改 `vendor/VERSIONS.json` 里 `markmap-view` 的版本 → `npm run vendor:pull` → `npm run verify`。
 
 ## 开发
 
@@ -195,7 +211,7 @@ src/
   ui/         岛屿布局、样式、抽屉动画、对话框、侧栏、状态栏、主题、toast
   i18n/       zh / en 词典与运行时
 public/       manifest、图标、Service Worker
-vendor/       双引擎及其依赖的源码副本 + VERSIONS.json 版本清单
+vendor/       双引擎与渲染库（mermaid / graphviz / markmap 等）的源码副本 + VERSIONS.json 版本清单
 scripts/      vendor-engines.mjs：同步 / 拉取 / 校验；build-sw.mjs：生成 Service Worker 预缓存清单
 ```
 
@@ -215,4 +231,4 @@ scripts/      vendor-engines.mjs：同步 / 拉取 / 校验；build-sw.mjs：生
 
 [MIT](LICENSE) © 2026 lollipop
 
-`vendor/` 下是 CodeMirror、Monaco 等引擎的源码副本，遵循各自的上游许可证（MIT / Apache-2.0），版本清单见 `vendor/VERSIONS.json`。
+`vendor/` 下是 CodeMirror、Monaco、markmap、mermaid、Graphviz（`@viz-js/viz`）等引擎的源码副本，沿用各自的上游许可证（多数为 MIT，`d3-*` 为 ISC），逐包以副本目录里的 `package.json` / `LICENSE` 为准；版本清单见 `vendor/VERSIONS.json`。

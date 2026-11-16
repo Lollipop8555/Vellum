@@ -285,7 +285,12 @@
     "vfile-message": "4.0.4",
     "w3c-keyname": "2.2.8",
     "web-namespaces": "2.0.1",
-    "zwitch": "2.0.4"
+    "zwitch": "2.0.4",
+    "@babel/runtime": "7.29.14",
+    "markmap-view": "0.18.13",
+    "@gera2ld/jsx-dom": "2.2.2",
+    "markmap-common": "0.18.9",
+    "npm2url": "0.2.4"
   },
   "subpaths": {
     "@ungap/structured-clone": {

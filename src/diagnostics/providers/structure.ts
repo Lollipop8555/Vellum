@@ -1,5 +1,6 @@
 import type { SyntaxNode, Tree } from '@lezer/common'
 import type { LangId } from '../../editors/languages'
+import { isMarkdownLike } from '../../doc-views'
 import { slugify } from '../../ui/md/slug'
 import { maskLines, toLines } from '../lines'
 import { extOf } from '../registry'
@@ -355,7 +356,7 @@ export function structureIssues(
   if (tree && (lang === 'json' || lang === 'yaml')) {
     issues.push(...duplicateKeyIssues(tree, text, lang))
   }
-  if (lang === 'markdown') {
+  if (isMarkdownLike(lang)) {
     issues.push(...markdownIssues(text))
   } else if (ext === 'csv' || ext === 'tsv') {
     issues.push(...dsvIssues(text, name))

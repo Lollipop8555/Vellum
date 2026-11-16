@@ -847,6 +847,21 @@ svg.eng-ico {
   padding: 8px 8px 6px 11px;
 }
 
+/*
+ * 内容槽位：四个分区共用一个宿主，任意时刻只有一个内容根节点在里面。
+ * 根节点自己带 flex:1（.drawer-list / .drawer-searchpane），这里只负责给高度。
+ */
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.drawer-body > * {
+  flex: 1;
+  min-width: 0;
+}
+
 /* 分区标题：图标栏已经指明了当前分区，这里给个明确的名字，兼作面板的无障碍名 */
 .drawer-title {
   margin: 0;
@@ -1425,6 +1440,294 @@ body.is-resizing {
   font-size: 12px;
 }
 
+/**
+ * 内容挂载点：任意时刻只有一个子节点（当前内容）。
+ * 各内容自己的 .markdown-body / .outline-body / .issues-body 仍带 flex:1，
+ * 这里只负责把高度链传下去，不为每个内容单独写布局。
+ */
+.panel-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/** 导图面板：布局/连线/缩放都在 markmap 的 svg 里，这里只管容器与分支色板 */
+.mindmap-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+
+  /**
+   * 分支色板：每条一级分支各占一个色系，子孙连线沿用它做深浅渐变。
+   * 交给 CSS 而不是在 SVG 里写死色值：切主题时颜色立刻跟上，不用等下一次重画。
+   * v2（markmap）也从这里读，只是它要 hex 而不是 var()，所以在渲染时读一次。
+   */
+  --mm-b0: #6ea8ff;
+  --mm-b1: #a78bfa;
+  --mm-b2: #f472b6;
+  --mm-b3: #fb923c;
+  --mm-b4: #facc15;
+  --mm-b5: #34d399;
+  --mm-b6: #22d3ee;
+  --mm-b7: #d8b4fe;
+}
+
+:root[data-theme='light'] .mindmap-body {
+  --mm-b0: #3a68d8;
+  --mm-b1: #7c3aed;
+  --mm-b2: #db2777;
+  --mm-b3: #ea580c;
+  --mm-b4: #b45309;
+  --mm-b5: #059669;
+  --mm-b6: #0e7490;
+  --mm-b7: #9333ea;
+}
+
+/* 浮在视口上，不参与滚动也不改滚动尺寸 */
+.mindmap-tools {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: var(--c-island);
+  box-shadow: var(--shadow-drawer);
+}
+
+.mindmap-tool {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.mindmap-tool:hover {
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+.mindmap-zoom-reset {
+  min-width: 44px;
+}
+
+/* 图标按钮（缩放三键与导出）：竖线由 path 描边画，颜色跟着按钮的 color 走 */
+.mindmap-tool svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+  margin: 0 auto;
+}
+
+.mindmap-tool svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 工具条里的分组线：左边缩放，右边导出 */
+.mindmap-tool-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--c-border);
+}
+
+/* ------------------------------------------------- 导图（markmap 引擎） */
+
+/**
+ * 布局、连线、缩放全部在 SVG 里由 markmap 画，这里只负责外壳与主题变量的映射。
+ * markmap 把默认样式塞在 svg 内部的 <style> 里（`.markmap` 单类选择器），
+ * 下面用后代选择器提一级优先级，把字体/颜色接到项目的 --c-* 变量上。
+ */
+.mindmap-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  /* 触控板上双指缩放要交给 d3-zoom，不能触发页面滚动 */
+  touch-action: none;
+}
+
+/* 点阵纸：纯色底太素，也给「这里可以拖动」一点暗示 */
+.mindmap-body {
+  background-image: radial-gradient(circle, var(--c-border-soft) 1px, transparent 1px);
+  background-size: 20px 20px;
+  background-attachment: local;
+}
+
+.mindmap-svg:active {
+  cursor: grabbing;
+}
+
+.mindmap-body .markmap {
+  --markmap-font: 12.5px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC',
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --markmap-text-color: var(--c-text);
+  --markmap-code-color: var(--c-text);
+  --markmap-code-bg: var(--c-raised);
+  --markmap-a-color: var(--c-accent);
+  --markmap-a-decoration: none;
+  --markmap-circle-open-bg: var(--c-island);
+  --markmap-circle-stroke: var(--c-border);
+  --markmap-highlight-bg: var(--c-raised);
+}
+
+.mindmap-body .markmap-foreign a:hover {
+  text-decoration: underline;
+}
+
+/* 代码块 / 表格块：真把内容画出来（最多 8 行 / 5 行数据，超出标 +N） */
+.mindmap-body .mm2-block-head {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--c-dim);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.mindmap-body .mm2-code {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--c-raised);
+  font: 11.5px/1.55 var(--mono-font);
+  white-space: pre;
+  overflow: hidden;
+}
+
+.mindmap-body .mm2-table {
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.mindmap-body .mm2-table th,
+.mindmap-body .mm2-table td {
+  padding: 2px 8px;
+  border: 1px solid var(--c-border-soft);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.mindmap-body .mm2-table th {
+  color: var(--c-dim);
+  font-weight: 600;
+}
+
+.mindmap-body .mm2-more {
+  display: block;
+  margin-top: 4px;
+  color: var(--c-dim);
+  font-size: 11px;
+}
+
+/**
+ * 列表项标记：无序圆点 / 有序序号 / 任务勾选框。
+ *
+ * 不用 `•`、`1.`、`☑` 这些字符 —— 它们靠字体基线站队，字号一换就歪，
+ * 序号长度也没法控制。三种标记都在 CSS 里画，宽度按内容撑：
+ * 个位数是圆角方块，涨到两三位自然长成胶囊，圆角固定 4px。
+ * `vertical-align` 的微调值都是对着 12.5px/1.55 的正文试出来的。
+ */
+.mindmap-body .mm2-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  margin-right: 6px;
+  color: var(--c-dim);
+}
+
+/* 无序：4px 实心圆，圆心对齐文字中缝 */
+.mindmap-body .mm2-dot {
+  width: 4px;
+  height: 4px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--c-dim);
+  vertical-align: 0.15em;
+}
+
+/* 有序：数字装在圆角框里，宽度跟着位数走（1ch + 两侧 padding） */
+.mindmap-body .mm2-ord {
+  min-width: 1ch;
+  padding: 0 3px;
+  /* 13.5px 高的框配 1ch(≈5.4px)+6px 的宽，个位数接近方块；
+     两位数宽到 20px 就成了胶囊，圆角仍是 4px */
+  height: 13.5px;
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  background: var(--c-raised);
+  color: var(--c-dim);
+  font: 500 0.78em/1 var(--mono-font);
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+
+/* 任务：11px 方框，勾是标记里内联的那条 svg 折线 */
+.mindmap-body .mm2-check {
+  width: 11px;
+  height: 11px;
+  border: 1.2px solid var(--c-border);
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.mindmap-body .mm2-check svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: var(--c-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 勾上的用强调色描边 + 淡底；这里只是渲染，点不了，所以不做 hover 反馈 */
+.mindmap-body .mm2-check.is-on {
+  border-color: var(--c-accent);
+  background: color-mix(in srgb, var(--c-accent) 18%, transparent);
+}
+
+/* 没勾的只留空框 */
+.mindmap-body .mm2-check:not(.is-on) svg {
+  visibility: hidden;
+}
+
+/* 空态：盖在点阵上，不吃指针事件（下面的 svg 还要能拖） */
+.mindmap-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--c-dim);
+  font-size: 12.5px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.mindmap-empty[hidden] {
+  display: none;
+}
+
 .markdown-body {
   flex: 1;
   overflow: auto;
@@ -1519,6 +1822,36 @@ body.is-resizing {
   margin: 0.55em 0;
 }
 
+/**
+ * 任务列表：GFM 输出 `<input type="checkbox" disabled>`（勾选状态在 `checked` 上，
+ * 白名单已放行）。原生 checkbox 全交给 UA 画：深色主题下是一个系统白底小方块，
+ * 勾是浏览器自己的像素，圆角/配色和项目完全两套；这里 `appearance: none` 重画一套。
+ * 勾用背景图里的 SVG 路径 —— input 是替换元素，`::after` 在它身上不生成。
+ */
+.markdown-body li.task-list-item {
+  /* 方块自己就是标记，再留一个 disc 等于双份符号 */
+  list-style: none;
+}
+
+.markdown-body li.task-list-item > input[type='checkbox'] {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  /* 退到原 disc 的位置，正文起点保持不动 */
+  margin: 0 5px 0 -19px;
+  vertical-align: -2px;
+  border: 1.2px solid var(--c-guide);
+  border-radius: 3.5px;
+  background: transparent no-repeat center / 11px 11px;
+  cursor: default;
+}
+
+.markdown-body li.task-list-item > input[type='checkbox']:checked {
+  border-color: var(--c-accent);
+  background-color: var(--c-accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6.3 4.9 8.6 9.4 3.4' fill='none' stroke='%23fff' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
 .markdown-body code {
   font-family: var(--mono-font);
   font-size: 0.9em;
@@ -1547,71 +1880,71 @@ body.is-resizing {
  * 编辑器那套是 Monaco / CM6 的 token 色，管不到预览的 DOM。
  * 这里只做类名 → `--syn-*` 的映射，色值仍集中在 :root，两套渲染共用一个色板。
  */
-.markdown-body .hljs-comment,
-.markdown-body .hljs-quote {
+:is(.markdown-body, .mindmap-body) .hljs-comment,
+:is(.markdown-body, .mindmap-body) .hljs-quote {
   color: var(--syn-com);
   font-style: italic;
 }
 
-.markdown-body .hljs-keyword,
-.markdown-body .hljs-selector-tag,
-.markdown-body .hljs-literal,
-.markdown-body .hljs-doctag,
-.markdown-body .hljs-meta .hljs-keyword {
+:is(.markdown-body, .mindmap-body) .hljs-keyword,
+:is(.markdown-body, .mindmap-body) .hljs-selector-tag,
+:is(.markdown-body, .mindmap-body) .hljs-literal,
+:is(.markdown-body, .mindmap-body) .hljs-doctag,
+:is(.markdown-body, .mindmap-body) .hljs-meta .hljs-keyword {
   color: var(--syn-key);
 }
 
-.markdown-body .hljs-string,
-.markdown-body .hljs-regexp,
-.markdown-body .hljs-addition,
-.markdown-body .hljs-meta .hljs-string,
-.markdown-body .hljs-template-tag {
+:is(.markdown-body, .mindmap-body) .hljs-string,
+:is(.markdown-body, .mindmap-body) .hljs-regexp,
+:is(.markdown-body, .mindmap-body) .hljs-addition,
+:is(.markdown-body, .mindmap-body) .hljs-meta .hljs-string,
+:is(.markdown-body, .mindmap-body) .hljs-template-tag {
   color: var(--syn-str);
 }
 
-.markdown-body .hljs-number,
-.markdown-body .hljs-symbol,
-.markdown-body .hljs-bullet,
-.markdown-body .hljs-link,
-.markdown-body .hljs-selector-attr {
+:is(.markdown-body, .mindmap-body) .hljs-number,
+:is(.markdown-body, .mindmap-body) .hljs-symbol,
+:is(.markdown-body, .mindmap-body) .hljs-bullet,
+:is(.markdown-body, .mindmap-body) .hljs-link,
+:is(.markdown-body, .mindmap-body) .hljs-selector-attr {
   color: var(--syn-num);
 }
 
-.markdown-body .hljs-title,
-.markdown-body .hljs-title.function_,
-.markdown-body .hljs-section,
-.markdown-body .hljs-name,
-.markdown-body .hljs-meta {
+:is(.markdown-body, .mindmap-body) .hljs-title,
+:is(.markdown-body, .mindmap-body) .hljs-title.function_,
+:is(.markdown-body, .mindmap-body) .hljs-section,
+:is(.markdown-body, .mindmap-body) .hljs-name,
+:is(.markdown-body, .mindmap-body) .hljs-meta {
   color: var(--syn-fn);
 }
 
-.markdown-body .hljs-type,
-.markdown-body .hljs-title.class_,
-.markdown-body .hljs-built_in,
-.markdown-body .hljs-class .hljs-title,
-.markdown-body .hljs-tag {
+:is(.markdown-body, .mindmap-body) .hljs-type,
+:is(.markdown-body, .mindmap-body) .hljs-title.class_,
+:is(.markdown-body, .mindmap-body) .hljs-built_in,
+:is(.markdown-body, .mindmap-body) .hljs-class .hljs-title,
+:is(.markdown-body, .mindmap-body) .hljs-tag {
   color: var(--syn-type);
 }
 
-.markdown-body .hljs-attr,
-.markdown-body .hljs-attribute,
-.markdown-body .hljs-property,
-.markdown-body .hljs-variable,
-.markdown-body .hljs-template-variable,
-.markdown-body .hljs-selector-class,
-.markdown-body .hljs-selector-id {
+:is(.markdown-body, .mindmap-body) .hljs-attr,
+:is(.markdown-body, .mindmap-body) .hljs-attribute,
+:is(.markdown-body, .mindmap-body) .hljs-property,
+:is(.markdown-body, .mindmap-body) .hljs-variable,
+:is(.markdown-body, .mindmap-body) .hljs-template-variable,
+:is(.markdown-body, .mindmap-body) .hljs-selector-class,
+:is(.markdown-body, .mindmap-body) .hljs-selector-id {
   color: var(--syn-prop);
 }
 
-.markdown-body .hljs-deletion {
+:is(.markdown-body, .mindmap-body) .hljs-deletion {
   color: var(--c-danger);
 }
 
-.markdown-body .hljs-emphasis {
+:is(.markdown-body, .mindmap-body) .hljs-emphasis {
   font-style: italic;
 }
 
-.markdown-body .hljs-strong {
+:is(.markdown-body, .mindmap-body) .hljs-strong {
   font-weight: 600;
 }
 
@@ -2421,12 +2754,30 @@ textarea.raw {
     overflow: visible;
   }
 
+  /* 挂载点在打印时不再是 flex 容器：内容直接按文档流排 */
+  .panel-view {
+    display: block;
+    flex: none;
+    min-height: 0;
+  }
+
   /* 预览原本是 flex:1 + overflow:auto 的滚动容器，打印时要摊平 */
   .markdown-body {
     flex: none;
     height: auto;
     overflow: visible;
     padding: 0;
+  }
+
+  /* 导图同理：缩放是屏幕上的交互，纸张上按原始尺寸摊开整棵树 */
+  .mindmap-body {
+    position: static;
+    height: auto;
+    overflow: visible;
+  }
+
+  .mindmap-tools {
+    display: none;
   }
 
   /* 图表、代码块、表格被分页切断基本不可读，能整块挪就整块挪 */
@@ -2667,6 +3018,94 @@ textarea.raw {
 .issues-check-input:focus {
   border-color: var(--c-accent);
   outline: none;
+}
+
+/* Markdown 细则：折叠起来只占一行摘要，展开是二十条逐项开关 */
+.issues-rules {
+  margin-bottom: 4px;
+}
+
+.issues-rules > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 2px;
+  color: var(--c-faint);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+
+/* 去掉默认三角，靠 hover 变色告诉人这行能点 */
+.issues-rules > summary::-webkit-details-marker {
+  display: none;
+}
+
+.issues-rules > summary:hover {
+  color: var(--c-text);
+}
+
+.issues-rules-count {
+  flex: none;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.issues-rules-list {
+  padding: 2px 0 4px;
+}
+
+.issues-rule {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 14px;
+  border-radius: var(--radius-sm);
+  color: var(--c-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.issues-rule:hover {
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+.issues-rule input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--c-accent);
+}
+
+.issues-rule-id {
+  flex: none;
+  color: var(--c-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+
+.issues-rule-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 这条规则在当前文档里报了几条 */
+.issues-rule-hits {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--c-island-2);
+  color: var(--c-accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.issues-rule-width {
+  width: 72px;
+  margin: 2px 6px 2px 40px;
 }
 
 .issues-actions {

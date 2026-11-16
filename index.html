@@ -103,7 +103,7 @@
           <button
             class="rail-btn"
             id="railFilesBtn"
-            data-left-tab="files"
+            data-panel-trigger="railFilesBtn"
             aria-pressed="true"
             aria-expanded="true"
             aria-controls="drawer"
@@ -130,7 +130,7 @@
           <button
             class="rail-btn"
             id="railSearchBtn"
-            data-left-tab="search"
+            data-panel-trigger="railSearchBtn"
             aria-pressed="false"
             aria-expanded="true"
             aria-controls="drawer"
@@ -144,7 +144,7 @@
           <button
             class="rail-btn"
             id="railTrashBtn"
-            data-left-tab="trash"
+            data-panel-trigger="railTrashBtn"
             aria-pressed="false"
             aria-expanded="true"
             aria-controls="drawer"
@@ -179,7 +179,7 @@
           <button
             class="rail-btn"
             id="railSnapshotsBtn"
-            data-left-tab="snapshots"
+            data-panel-trigger="railSnapshotsBtn"
             aria-pressed="false"
             aria-expanded="true"
             aria-controls="drawer"
@@ -251,13 +251,14 @@
           aria-hidden="false"
         >
           <!-- 内容宽度锁在 --drawer-w 上：开合动画只改外层宽度，树行不跟着每帧重排 -->
-          <div class="drawer-inner">
+          <div class="drawer-inner" id="drawerInner">
             <div class="drawer-head">
               <h2 class="drawer-title" id="drawerTitle"></h2>
               <div class="drawer-head-actions">
                 <button
                   class="btn btn-ghost icon-only"
                   id="newMenuBtn"
+                  data-panel-action
                   data-i18n-title="action.new"
                   aria-haspopup="menu"
                   aria-expanded="false"
@@ -289,8 +290,13 @@
                 </button>
               </div>
             </div>
-            <!-- 搜索分区：文件名搜索 + 可选的设置（内容 / 大文件）；文件页不再带搜索框 -->
-            <div class="drawer-searchpane" id="searchPane" hidden>
+            <!--
+              内容槽位：四个分区的根节点都挂在这一个容器里，任意时刻只有一个。
+              下面的 searchPane / drawerList 是内容接管用的预置骨架，启动时会被摘走。
+            -->
+            <div class="drawer-body" id="drawerBody">
+              <!-- 搜索分区：文件名搜索 + 可选的设置（内容 / 大文件）；文件页不再带搜索框 -->
+              <div class="drawer-searchpane" id="searchPane" hidden>
               <div class="drawer-search">
                 <!-- 调整图标：两个开关都收进弹层，默认关闭，不占搜索行的地方 -->
                 <button
@@ -364,19 +370,32 @@
                 </label>
                 <div class="search-opt-note" data-i18n="search.optNote"></div>
               </div>
-              <div class="drawer-list" id="searchResults"></div>
+                <div class="drawer-list" id="searchResults"></div>
+              </div>
+              <div class="drawer-list" id="drawerList"></div>
             </div>
-            <div class="drawer-list" id="drawerList"></div>
             <!-- 文件页底部的占比：环给直觉，这里给精确数字 -->
             <div class="drawer-storage" id="drawerStorage" hidden>
               <div class="storage-meter"><span class="storage-fill" id="storageFill"></span></div>
               <div class="storage-text" id="drawerStorageText"></div>
             </div>
             <div class="drawer-foot" id="drawerFoot">
-              <button class="btn" id="restoreAllBtn" data-i18n="action.restoreAll" hidden></button>
-              <button class="btn" id="emptyTrashBtn" data-i18n="action.emptyTrash" hidden></button>
-              <button class="btn btn-primary" id="importBtn" data-i18n="action.import"></button>
-              <div class="batch-bar" id="batchBar" hidden>
+              <button
+                class="btn"
+                id="restoreAllBtn"
+                data-panel-action
+                data-i18n="action.restoreAll"
+                hidden
+              ></button>
+              <button
+                class="btn"
+                id="emptyTrashBtn"
+                data-panel-action
+                data-i18n="action.emptyTrash"
+                hidden
+              ></button>
+              <button class="btn btn-primary" id="importBtn" data-panel-action data-i18n="action.import"></button>
+              <div class="batch-bar" id="batchBar" data-panel-action hidden>
                 <span class="batch-count" id="batchCount"></span>
                 <button class="btn" id="batchExportBtn" data-i18n="action.batchExport"></button>
                 <button class="btn" id="batchMoveBtn" data-i18n="action.batchMove"></button>
@@ -462,10 +481,15 @@
             data-i18n-title="panel.resize"
             tabindex="0"
           ></div>
-          <div class="panel-head">
+          <div class="panel-head" id="panelHead">
             <div class="panel-title" id="panelTitle"></div>
             <div class="spacer"></div>
-            <button class="btn btn-ghost icon-only" id="previewPrint" data-i18n-title="action.print">
+            <button
+              class="btn btn-ghost icon-only"
+              id="previewPrint"
+              data-panel-action
+              data-i18n-title="action.print"
+            >
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M6.4 6.8V3.6h7.2v3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
                 <path
@@ -478,7 +502,13 @@
                 <rect x="6.4" y="11.4" width="7.2" height="5.2" rx="0.9" fill="none" stroke="currentColor" stroke-width="1.3" />
               </svg>
             </button>
-            <button class="btn btn-ghost icon-only" id="issuesOptions" data-i18n-title="issues.optionsTip" hidden>
+            <button
+              class="btn btn-ghost icon-only"
+              id="issuesOptions"
+              data-panel-action
+              data-i18n-title="issues.optionsTip"
+              hidden
+            >
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path
                   d="M3.4 5.6h1.4M3.4 10h1.4M3.4 14.4h1.4M7.4 5.6h9.2M7.4 10h9.2M7.4 14.4h9.2"
@@ -495,25 +525,58 @@
               </svg>
             </button>
           </div>
-          <div class="markdown-body" id="previewBody"></div>
-          <div class="outline-body" id="outlineBody" hidden></div>
-          <div class="issues-body" id="issuesBody" hidden></div>
+          <div class="panel-view" id="panelView"></div>
         </aside>
 
         <!-- 右竖条 -->
-        <aside class="rail rail-right">
-          <button class="rail-btn" id="previewBtn" data-i18n-title="rail.preview" hidden>
+        <aside class="rail rail-right" id="rightRail">
+          <button
+            class="rail-btn"
+            id="previewBtn"
+            data-panel-trigger="previewBtn"
+            data-i18n-title="rail.preview"
+            hidden
+          >
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <path d="M2.4 10S5.4 4.8 10 4.8 17.6 10 17.6 10 14.6 15.2 10 15.2 2.4 10 2.4 10z" fill="none" stroke="currentColor" stroke-width="1.3" />
               <circle cx="10" cy="10" r="2.4" fill="none" stroke="currentColor" stroke-width="1.3" />
             </svg>
           </button>
-          <button class="rail-btn" id="outlineBtn" data-i18n-title="rail.outline" data-doc-action hidden>
+          <button
+            class="rail-btn"
+            id="outlineBtn"
+            data-panel-trigger="outlineBtn"
+            data-i18n-title="rail.outline"
+            data-doc-action
+            hidden
+          >
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <path d="M3.4 5.2h1.2M7 5.2h9.6M3.4 10h1.2M7 10h9.6M3.4 14.8h1.2M7 14.8h9.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
             </svg>
           </button>
-          <button class="rail-btn" id="issuesBtn" data-i18n-title="rail.issues" data-doc-action hidden>
+          <button
+            class="rail-btn"
+            id="mindmapBtn"
+            data-panel-trigger="mindmapBtn"
+            data-i18n-title="rail.mindmap"
+            hidden
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="3.6" cy="10" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <circle cx="16.4" cy="4.6" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <circle cx="16.4" cy="10" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <circle cx="16.4" cy="15.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path d="M5 10c4 0 3.6-5.4 9.9-5.4M5 10h9.9M5 10c4 0 3.6 5.4 9.9 5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button
+            class="rail-btn"
+            id="issuesBtn"
+            data-panel-trigger="issuesBtn"
+            data-i18n-title="rail.issues"
+            data-doc-action
+            hidden
+          >
             <svg viewBox="0 0 20 20" aria-hidden="true">
               <path d="M10 3.2l6.4 11.4a1 1 0 0 1-.9 1.5H4.5a1 1 0 0 1-.9-1.5L10 3.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
               <path d="M10 8.2v3.1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />

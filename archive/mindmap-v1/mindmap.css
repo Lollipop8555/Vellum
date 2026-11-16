@@ -1,0 +1,407 @@
+
+/**
+ * 思维导图：视口负责滚动，画布自己绝对定位并按 zoom 缩放。
+ * 节点 180 × 32、行距 44 与 src/ui/mindmap.ts 的 NODE_W / NODE_H / ROW_H 对应，
+ * 改一边必须改另一边，否则连线会和节点错位。
+ */
+.mindmap-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+
+  /**
+   * 分支色板：每条一级分支各占一个色系，子孙连线沿用它做深浅渐变。
+   * 交给 CSS 而不是在 SVG 里写死色值：切主题时颜色立刻跟上，不用等下一次重画。
+   */
+  --mm-b0: #6ea8ff;
+  --mm-b1: #a78bfa;
+  --mm-b2: #f472b6;
+  --mm-b3: #fb923c;
+  --mm-b4: #facc15;
+  --mm-b5: #34d399;
+  --mm-b6: #22d3ee;
+  --mm-b7: #d8b4fe;
+}
+
+:root[data-theme='light'] .mindmap-body {
+  --mm-b0: #3a68d8;
+  --mm-b1: #7c3aed;
+  --mm-b2: #db2777;
+  --mm-b3: #ea580c;
+  --mm-b4: #b45309;
+  --mm-b5: #059669;
+  --mm-b6: #0e7490;
+  --mm-b7: #9333ea;
+}
+
+.mindmap-viewport {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  /* 纵向排：stage 的 margin:auto 才能同时负责上下左右居中，截断提示也能落在下面 */
+  flex-direction: column;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  cursor: grab;
+  /* 点阵纸：纯色底太素，也让「这里可以拖动」有视觉暗示 */
+  background-image: radial-gradient(circle, var(--c-border-soft) 1px, transparent 1px);
+  background-size: 20px 20px;
+  background-attachment: local;
+}
+
+/* 拖动平移时别顺手把节点文字选成蓝色，光标也要说「正在拖」 */
+.mindmap-viewport.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* transform 不参与布局：滚动尺寸得按缩放后的尺寸显式撑开，否则滚不到右下角 */
+.mindmap-stage {
+  position: relative;
+  /* 内容比视口小时居中；比视口大时 auto 归零，照常滚动 */
+  margin: auto;
+}
+
+.mindmap-canvas {
+  position: relative;
+  transform-origin: 0 0;
+}
+
+/* 浮在视口上，不参与滚动也不改滚动尺寸 */
+.mindmap-tools {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: var(--c-island);
+  box-shadow: var(--shadow-drawer);
+}
+
+.mindmap-tool {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.mindmap-tool:hover {
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+.mindmap-zoom-reset {
+  min-width: 44px;
+}
+
+.mindmap-links {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+/*
+ * 连线是导图的骨架：颜色与粗细由 mindmap.ts 按「分支色 + 层级」逐条写在 path 上
+ * （一级最粗、越往后越细），这里只管端头与兜底宽度，不能写死 stroke。
+ */
+.mindmap-links path {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mindmap-nodes {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* 宽高由 mindmap.ts 按内容算好写进 inline style：普通节点 180×32，
+   代码块/表格块按行数长高，所以这里不写死尺寸。
+   形态照 markmap 的 classic 主题：**一行文字压在自己的下划线上**，
+   没有边框、没有底色 —— 层次交给字号和下划线的粗细，视觉重点让给连线。 */
+.mindmap-node {
+  position: absolute;
+  display: flex;
+  /* 文字贴着下划线坐（markmap 是这个关系）：居中会让文字离线下漂 10px，像悬空 */
+  align-items: flex-end;
+  box-sizing: border-box;
+  padding: 0 10px 5px;
+  /* 折叠按钮要探出右缘，overflow:hidden 会把它裁掉 */
+  overflow: visible;
+  border: 0;
+  background: none;
+  color: var(--c-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+/* 下划线是连线的延长线：左右端点就是连线的起点/终点，
+   粗细跟层级走（--mm-lw 由 mindmap.ts 写入，和 strokeWidth 同一个公式） */
+.mindmap-node::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--mm-lw, 2px);
+  border-radius: 99px;
+  background: var(--mm-c, var(--c-accent));
+  opacity: 0.75;
+  transition: opacity 0.12s;
+}
+
+.mindmap-node:hover,
+.mindmap-node:focus-visible {
+  color: var(--mm-c, var(--c-accent));
+  outline: none;
+}
+
+.mindmap-node:hover::after,
+.mindmap-node:focus-visible::after {
+  opacity: 1;
+}
+
+/* 根节点是标题：字大一号、下划线满不透明，和下面的分支拉开层次 */
+.mindmap-node[data-depth='0'] {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.mindmap-node[data-depth='0']::after {
+  opacity: 1;
+}
+
+/* 省略号必须挂在文字自己的盒子上：节点本身 overflow 放开后不再负责截断 */
+.mindmap-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 节点里的行内标记要跟正文一个样：标签 HTML 来自预览管线，样式走这里 */
+.mindmap-node strong {
+  font-weight: 600;
+}
+
+.mindmap-node code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--c-raised);
+  font-family: var(--mono-font);
+  font-size: 0.92em;
+}
+
+.mindmap-node a {
+  color: var(--c-accent);
+  text-decoration: none;
+}
+
+.mindmap-node img,
+.mindmap-node .katex {
+  display: none;
+}
+
+/* 正文块（段落/引用/表格…）不是树的骨架，文字压暗一档，别和标题抢注意力 */
+.mindmap-node[data-kind='para'],
+.mindmap-node[data-kind='quote'] {
+  color: color-mix(in oklab, var(--c-text) 84%, var(--c-island));
+}
+
+.mindmap-node[data-kind='math'] .mindmap-label {
+  font-family: var(--mono-font);
+  font-size: 0.94em;
+}
+
+/* ------------------------------------------------- 代码块 / 表格块（多行） */
+/* 真把内容画出来，而不是压成「语言 · 首行」一行。尺寸契约见 mindmap.ts 顶部常量。
+   这两种块要给个底板：代码浮在点阵纸上没法读。下划线留在底板最下缘，
+   于是视觉上是「内容块坐在自己的线上」。 */
+.mindmap-node[data-kind='code'],
+.mindmap-node[data-kind='table'] {
+  /* 下留 9px 给下划线，别让它压住最后一行 */
+  padding: 7px 10px 9px;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 7px;
+  background: var(--c-raised);
+}
+
+/* 多行块：不要省略号、不要 nowrap，交给里面的 pre/table 自己排 */
+.mindmap-label-block {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: normal;
+  text-overflow: clip;
+}
+
+/* 语言 + 行数：固定一行高，高度才算得准（CODE_HEAD_H） */
+.mm-block-head {
+  display: block;
+  height: 15px;
+  margin-bottom: 4px;
+  overflow: hidden;
+  color: var(--c-dim);
+  font-family: var(--mono-font);
+  font-size: 11px;
+  line-height: 15px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mm-code {
+  margin: 0;
+  overflow: hidden;
+  color: var(--c-text);
+  font-family: var(--mono-font);
+  font-size: 11.5px;
+  /* 行高必须等于 CODE_LINE_H，否则卡片高度和连线端点对不上 */
+  line-height: 18px;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.mm-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 11.5px;
+  line-height: 18px;
+}
+
+.mm-table th,
+.mm-table td {
+  height: 20px;
+  padding: 0 8px 0 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mm-table th {
+  color: var(--c-dim);
+  font-weight: 600;
+}
+
+.mm-table tbody tr + tr td {
+  border-top: 1px solid var(--c-border-soft);
+}
+
+/* 「后面还有 N 行」：贴右下角，不占布局高度 */
+.mm-more {
+  position: absolute;
+  right: 8px;
+  bottom: 3px;
+  padding-left: 4px;
+  background: var(--c-raised);
+  color: var(--c-dim);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mindmap-node[data-kind='quote'] .mindmap-label::before {
+  content: '❝';
+  margin-right: 5px;
+  color: var(--mm-c, var(--c-dim));
+}
+
+.mindmap-node[data-kind='math'] .mindmap-label::before {
+  content: '∑';
+  margin-right: 5px;
+  color: var(--c-dim);
+}
+
+/* 原地编辑框：位置/宽度由 TS 按节点坐标给，这里只管长相 */
+.mindmap-editor {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+  min-height: 32px;
+  max-height: 360px;
+  padding: 6px 9px;
+  border: 1px solid var(--mm-c, var(--c-accent));
+  border-radius: 9px;
+  outline: none;
+  background: var(--c-island);
+  box-shadow: var(--shadow-drawer);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: none;
+  overflow: auto;
+}
+
+.mindmap-editor[data-kind='code'],
+.mindmap-editor[data-kind='math'] {
+  font-family: var(--mono-font);
+}
+
+/* 折叠钮 = 下划线右端的小圆点（markmap 的 fold circle）：
+   实底盖住穿过这里的半截连线，和线用的是同一个分支色 */
+.mindmap-toggle {
+  position: absolute;
+  right: -1px;
+  bottom: -6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--mm-c, var(--c-accent));
+  border-radius: 50%;
+  background: var(--c-island);
+  color: var(--mm-c, var(--c-accent));
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 图标路径按 10×10 画，缩到 8px 才留得出圆的边距 */
+.mindmap-toggle-icon {
+  width: 8px;
+  height: 8px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.mindmap-toggle:hover {
+  border-color: var(--mm-c, var(--c-accent));
+  color: var(--c-text);
+}
+
+.mindmap-empty,
+.mindmap-hint {
+  margin: 0;
+  padding: 28px 24px;
+  color: var(--c-dim);
+  font-size: 13px;
+  text-align: center;
+}

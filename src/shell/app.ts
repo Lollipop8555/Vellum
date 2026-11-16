@@ -1,8 +1,22 @@
 import { applyStaticText, getLang, initLang, onLangChange, setLang, t } from '../i18n'
 import { CodeMirrorAdapter } from '../editors/codemirror'
 import type { EditorAdapter } from '../editors/adapter'
+import { destroyMindmap, renderMindmap } from '../ui/mindmap'
 import { activeIndex, extractOutline, type OutlineItem } from '../ui/outline'
+import { isMarkdownLike, supportsDocView } from '../doc-views'
+import {
+  activateBinding,
+  activeContentId,
+  closeSlot,
+  contentById,
+  createContent,
+  refreshChrome,
+  registerBinding,
+  registerSlot,
+  showContent,
+} from './panel-view'
 import { DIAG_VERSION, MAX_TEXT, analyze, contentHash } from '../diagnostics'
+import { enabledMdRules } from '../diagnostics/providers/mdLint'
 import { dictFailed, ensureDict, onDictFailed, onDictReady } from '../diagnostics/dict'
 import { availabilityFor, dominantReason, enabledChecks, hasRunnable } from '../diagnostics/registry'
 import {
@@ -114,8 +128,6 @@ import type {
 export const el = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T
 
-type DrawerTab = 'files' | 'search' | 'trash' | 'snapshots'
-
 const EXPANDED_KEY = 'vellum.expanded'
 
 function readExpanded(): string[] {
@@ -153,7 +165,6 @@ export interface AppState {
   dirty: boolean
   locked: boolean
   snapshots: SnapshotRecord[]
-  drawerTab: DrawerTab
   /** 抽屉里已展开的文件夹 id，持久化在 localStorage */
   expanded: Set<string>
   /** 正在内联重命名的节点 id */
@@ -163,12 +174,7 @@ export interface AppState {
   encodingConfirmed: boolean
   /** 右侧面板是否展开（名字沿用老代码：它管的就是这个面板） */
   previewOpen: boolean
-  /** 右侧面板当前显示哪一页 */
-  rightTab: RightTab
 }
-
-/** 右侧容器同一时刻只显示一页；切换入口只有 rail（面板头不放页签） */
-export type RightTab = 'preview' | 'outline' | 'issues'
 
 export const state: AppState = {
   files: [],
@@ -183,15 +189,160 @@ export const state: AppState = {
   dirty: false,
   locked: false,
   snapshots: [],
-  drawerTab: 'files',
   expanded: new Set<string>(readExpanded()),
   renamingId: null,
   search: '',
   rawBytes: null,
   encodingConfirmed: false,
   previewOpen: false,
-  rightTab: 'preview',
 }
+
+/* --------------------------------------------------------- 右侧面板内容 */
+
+/**
+ * 内容只声明自己的标题、头部按钮和渲染入口，不持有任何容器引用。
+ * 挂到哪个槽位由 startApp 里的绑定决定（plans/panel-registry.md）。
+ */
+const previewContent = createContent({
+  id: 'preview',
+  titleKey: 'panel.preview',
+  className: 'markdown-body',
+  rootId: 'previewBody',
+  actions: ['previewPrint'],
+  render: () => renderPreviewInto(previewContent.root),
+})
+
+const outlineContent = createContent({
+  id: 'outline',
+  titleKey: 'panel.outline',
+  className: 'outline-body',
+  rootId: 'outlineBody',
+  render: () => renderOutlineInto(outlineContent.root),
+})
+
+const issuesContent = createContent({
+  id: 'issues',
+  titleKey: 'panel.issues',
+  className: 'issues-body',
+  rootId: 'issuesBody',
+  actions: ['issuesOptions'],
+  actionsVisible: () => Boolean(state.current),
+  render: () => renderIssuesPanel(issuesContent.root),
+})
+
+/**
+ * 导图和预览同源：都读 state.text，只是画法不同。
+ * 布局/连线/缩放交给 markmap 引擎，关面板时要把实例拆掉（d3-zoom 的监听挂在 svg 上）。
+ */
+const mindmapContent = createContent({
+  id: 'mindmap',
+  titleKey: 'panel.mindmap',
+  className: 'mindmap-body',
+  rootId: 'mindmapBody',
+  render: () => renderMindmapInto(mindmapContent.root),
+  onUnmount: () => destroyMindmap(mindmapContent.root),
+})
+
+/* --------------------------------------------------------- 左侧抽屉内容 */
+
+/**
+ * 四个分区同为内容，都挂在 left 槽位（plans/panel-registry.md §11）。
+ * 文件页与搜索页的骨架结构复杂、静态文案多，直接接管 index.html 里的预置节点；
+ * 回收站与快照复用列表样式，根节点现建。
+ */
+const filesContent = createContent({
+  id: 'files',
+  titleKey: 'rail.files',
+  className: 'drawer-list',
+  element: el('drawerList'),
+  actions: ['newMenuBtn', 'importBtn', 'batchBar'],
+  render: () =>
+    renderTree(filesContent.root, {
+      index: buildTree(state.files),
+      currentId: state.current?.id ?? null,
+      expanded: state.expanded,
+      // 搜索已经独立成页，文件树不再被搜索词过滤
+      filter: '',
+      renamingId: state.renamingId,
+      dirtyId: state.dirty && state.current ? state.current.id : null,
+      selection: state.selection,
+      handlers: {
+        open: (id) => void openRecord(id),
+        toggle: (id) => toggleFolder(id),
+        requestRename: (id) => beginRename(id),
+        rename: (id, name) => commitRename(id, name),
+        cancelRename: () => {
+          state.renamingId = null
+          renderLeftContent()
+        },
+        move: (id) => void moveDialog(id),
+        trash: (id) => void trashNode(id),
+        compare: (id) => void compareWithFile(id),
+        exportNode: (id) => exportFolder(id),
+        create: (parentId, kind) => void createNode(kind, parentId),
+        select: (id, mode) => selectNode(id, mode),
+        drop: (id, parentId) => void dropMove(id, parentId),
+        openTab: (id) => void openFileInTab(id),
+        elsewhere: (id) => probeOpenElsewhere(id),
+      },
+    }),
+  syncChrome: syncFilesChrome,
+  // 离开文件页：重命名、多选、新建菜单都是「这一页才成立」的状态
+  onUnmount: () => {
+    state.renamingId = null
+    clearSelection()
+    closeNewItemMenu()
+  },
+})
+
+const searchContent = createContent({
+  id: 'search',
+  titleKey: 'rail.search',
+  className: 'drawer-searchpane',
+  element: el('searchPane'),
+  render: () => renderSearchPane(),
+  syncChrome: syncSearchChrome,
+  // 离开搜索页就掐掉扫描：结果没人看，别继续读盘；顺手收起设置弹层
+  // （root 已脱离文档，不能再用 el() 按 id 取，得从自己的树里找）
+  onUnmount: () => {
+    cancelSearch()
+    const options = searchContent.root.querySelector<HTMLElement>('#searchOptions')
+    if (options) options.hidden = true
+  },
+})
+
+const trashContent = createContent({
+  id: 'trash',
+  titleKey: 'rail.trash',
+  className: 'drawer-list',
+  rootId: 'trashList',
+  actions: ['restoreAllBtn', 'emptyTrashBtn'],
+  render: () => {
+    const index = buildTree(state.files)
+    renderTrashList(
+      trashContent.root,
+      trash.trashItems(state.files),
+      {
+        restore: (id) => void restoreFromTrash(id),
+        purge: (id) => void purgeFromTrash(id),
+      },
+      {
+        childCount: (id) => state.files.filter((n) => n.parentId === id).length,
+        pathOf: (id) => nodePath(index, id),
+      },
+    )
+  },
+  syncChrome: syncTrashChrome,
+})
+
+const snapshotsContent = createContent({
+  id: 'snapshots',
+  titleKey: 'rail.snapshots',
+  className: 'drawer-list',
+  rootId: 'snapshotList',
+  render: loadSnapshots,
+  syncChrome: syncSnapshotsChrome,
+})
 
 const lock = new FileLock()
 let drawer: Drawer
@@ -218,11 +369,13 @@ export async function startApp() {
 
   drawer = new Drawer(el('drawer'), () => state.editor?.layout())
   // 开合只影响图标高亮与 aria 状态；列表内容与分区无关，不用重渲染
-  drawer.onChange = () => syncLeftBarState()
+  drawer.onChange = () => refreshChrome('left')
   applyDrawerWidth(getSettings().drawerWidth)
   applyPanelWidth(getSettings().panelWidth)
+  registerPanelSlot()
+  registerLeftSlot()
   // 默认展开 files 分区：标题、高亮、底部动作都得在首帧就对上
-  syncLeftPanel()
+  await showContent('left', 'files')
 
   wireTopbar()
   wireRails()
@@ -283,7 +436,7 @@ export async function startApp() {
     syncLeftPanel()
     refreshMeta()
     updateDirtyDot()
-    renderPreviewNow()
+    renderActivePanel()
     findBar?.relabel()
   })
 
@@ -315,6 +468,8 @@ function wireTopbar() {
     applyTheme(next)
     state.editor?.setTheme(next)
     refreshPreviewTheme()
+    // 导图的分支色是渲染时从 CSS 变量读成 hex 交给引擎的，换主题要重画一次
+    if (mindmapContent.isVisible()) renderMindmapInto(mindmapContent.root)
   })
 
   el('langBtn').addEventListener('click', () => {
@@ -346,32 +501,33 @@ function updateEngineSeg() {
  * 全部走显式点击，不再有任何「指针经过就改变布局」的隐式行为。
  */
 function wireRails() {
+  // 左竖条：与右竖条同一套绑定，点当前分区的图标等于按 X（toggle 由绑定表决定）
   el('leftBar').addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-left-tab]')
-    if (!btn) return
-    const tab = btn.dataset.leftTab as DrawerTab
-    if (drawer.isOpen && state.drawerTab === tab) {
-      void drawer.hide()
-      return
-    }
-    switchDrawerTab(tab)
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-panel-trigger]')
+    const trigger = btn?.dataset.panelTrigger
+    if (!trigger) return
+    void activateBinding(trigger)
   })
   el('drawerClose').addEventListener('click', () => void drawer.hide())
 
-  el('previewBtn').addEventListener('click', () => togglePanel('preview'))
-  el('outlineBtn').addEventListener('click', () => togglePanel('outline'))
-  // 检查面板与预览/大纲共用一个容器，右竖条就是切换器（面板头里不再有页签）
-  el('issuesBtn').addEventListener('click', () => togglePanel('issues'))
+  // 右竖条：按钮只声明绑定（data-panel-trigger），切换逻辑全在 panel-view 里
+  el('rightRail').addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-panel-trigger]')
+    const trigger = btn?.dataset.panelTrigger
+    if (!trigger) return
+    void activateBinding(trigger)
+  })
   el('issuesOptions').addEventListener('click', () => {
     issuesOptionsOpen = !issuesOptionsOpen
-    renderIssuesPanel()
+    renderIssuesPanel(issuesContent.root)
   })
   el('transformsBtn').addEventListener('click', () => transformsDialog((id) => applyTransform(id)))
   el('statsBtn').addEventListener('click', () => showStats())
   el('diffBtn').addEventListener('click', () => void diffWithLatest())
   el('diffFileBtn').addEventListener('click', () => diffWithFile())
   el('toolsBtn').addEventListener('click', () => toolsDialog())
-  el('outlineBody').addEventListener('click', (ev) => {
+  // 点击委托属于内容自己：root 由内容持有，不依赖容器里有没有 id
+  outlineContent.root.addEventListener('click', (ev) => {
     const btn = (ev.target as HTMLElement).closest<HTMLElement>('.outline-item')
     if (!btn) return
     const item = outlineItems[Number(btn.dataset.index ?? -1)]
@@ -381,133 +537,98 @@ function wireRails() {
   })
   el('previewClose').addEventListener('click', () => closePanel())
   el('previewPrint').addEventListener('click', () => {
-    togglePanel('preview', true)
     // 渲染是异步的，`window.print()` 不会等 Promise：
     // 必须先把这一轮渲染（含图表）跑完，否则会打出占位源码（§12.5）
-    void renderPreviewNow().finally(() => window.print())
+    void activateBinding('previewBtn', true).finally(() => window.print())
   })
 }
 
 /**
- * 分区同步：标题、图标高亮、底部动作、列表一次到位。
+ * 左侧面板同步：标题、图标高亮、动作按钮一次到位，内容自己重画。
  * 图标栏只在面板展开时给「当前分区」上高亮 —— 收起态没有可见内容，
  * 把某个图标标成选中会显得没头没尾。
  */
 function syncLeftPanel() {
-  syncLeftBarState()
-  el('drawerTitle').textContent = t(TAB_TITLES[state.drawerTab])
-  syncDrawerFoot()
-  renderDrawerList()
+  refreshChrome('left')
+  renderLeftContent()
 }
 
-const TAB_TITLES: Record<DrawerTab, 'rail.files' | 'rail.search' | 'rail.trash' | 'rail.snapshots'> = {
-  files: 'rail.files',
-  search: 'rail.search',
-  trash: 'rail.trash',
-  snapshots: 'rail.snapshots',
-}
-
-function syncLeftBarState() {
-  el('leftBar')
-    .querySelectorAll<HTMLElement>('[data-left-tab]')
-    .forEach((b) => {
-      const on = drawer.isOpen && b.dataset.leftTab === state.drawerTab
-      b.classList.toggle('is-active', on)
-      b.setAttribute('aria-pressed', String(on))
-      // 三个图标控制同一张面板，展开态对它们是一致的
-      b.setAttribute('aria-expanded', String(drawer.isOpen))
-    })
-}
-
-/** 切换分区：面板收着就顺手展开；点当前分区不走这里，那等于按 X */
-function switchDrawerTab(tab: DrawerTab) {
-  const changed = state.drawerTab !== tab
-  state.drawerTab = tab
-  if (changed) {
-    state.renamingId = null
-    clearSelection()
-  }
-  // 离开搜索页就把正在跑的扫描掐掉：结果没人看，别继续读盘；顺手收起设置弹层
-  if (tab !== 'search') {
-    cancelSearch()
-    el('searchOptions').hidden = true
-  } else {
-    el<HTMLInputElement>('searchInput').value = state.search
-  }
-  syncLeftPanel()
-  if (!drawer.isOpen) void drawer.show()
-  if (changed) void refreshSnapshots()
-}
-
-/**
- * 底部按钮随标签页切换：文件/回收站/快照各有各的动作。
- * 有选中项时整条换成批量操作条（§13.2），不再显示新建/导入。
- */
-function syncDrawerFoot() {
-  const isFiles = state.drawerTab === 'files'
-  const isTrash = state.drawerTab === 'trash'
-  const hasTrash = trash.trashItems(state.files).length > 0
-  const batch = isFiles && state.selection.size > 0
-
-  el('batchBar').hidden = !batch
-  // 「+」只属于文件页：搜索/回收站/快照没有「新建」这回事
-  el('newMenuBtn').hidden = !isFiles
-  // 切走时按钮会消失，还挂着的菜单就成了无主浮层
-  if (!isFiles) closeNewItemMenu()
-  el('importBtn').hidden = !isFiles || batch
-  el('restoreAllBtn').hidden = !isTrash
-  el<HTMLButtonElement>('restoreAllBtn').disabled = !hasTrash
-  el('emptyTrashBtn').hidden = !isTrash
-  el<HTMLButtonElement>('emptyTrashBtn').disabled = !hasTrash
-  // 折叠态的全局计数：始终反映「文件页 / 回收站」两个真实数字
+/** 折叠态的全局计数：始终反映「文件页 / 回收站」两个真实数字 */
+function syncRailCounts() {
   const trashedCount = trash.trashItems(state.files).length
   const liveCount = state.files.length - trashedCount
   el('railFilesCount').textContent = String(liveCount)
   el('railTrashCount').textContent = String(trashedCount)
   el('railFilesBtn').title = t('rail.filesTip', { n: liveCount })
   el('railTrashBtn').title = t('rail.trashTip', { n: trashedCount })
-  // 搜索页有自己的输入框和列表，文件页的骨架（树、底部动作）整体让位
-  const isSearch = state.drawerTab === 'search'
-  el('searchPane').hidden = !isSearch
-  el('drawerList').hidden = isSearch
-  el('drawerFoot').hidden = isSearch
-  // 空间条只属于文件页：回收站有自己的一行合计
-  el('drawerStorage').hidden = !isFiles
+}
 
+/** 文件页的细粒度 chrome：批量条与空间条；按钮显隐由槽位按 actions 管（§13.2） */
+function syncFilesChrome() {
+  const batch = state.selection.size > 0
+  el('batchBar').hidden = !batch
+  el('importBtn').hidden = batch
+  el('drawerStorage').hidden = false
+  el('drawerFoot').hidden = false
   if (batch) el('batchCount').textContent = t('list.selectedCount', { n: state.selection.size })
 }
 
-function wireDrawer() {
-  const input = el<HTMLInputElement>('searchInput')
-  const options = el('searchOptions')
-  const optBtn = el('searchOptionsBtn')
+function syncTrashChrome() {
+  const hasTrash = trash.trashItems(state.files).length > 0
+  el<HTMLButtonElement>('restoreAllBtn').disabled = !hasTrash
+  el<HTMLButtonElement>('emptyTrashBtn').disabled = !hasTrash
+  // 空间条只属于文件页：回收站里没有「还占多少」这回事
+  el('drawerStorage').hidden = true
+  el('drawerFoot').hidden = false
+}
+
+/** 搜索页与快照页没有底部动作：列表自己就是全部内容 */
+function syncSearchChrome() {
+  el('drawerStorage').hidden = true
+  el('drawerFoot').hidden = true
+}
+
+function syncSnapshotsChrome() {
+  syncSearchChrome()
+}
+
+/**
+ * 搜索页的骨架归 searchContent 所有，启动时已脱离文档，
+ * 所以这里不能再用 el() 按 id 取，只能从它自己的树里找。
+ */
+function wireSearchPane(root: HTMLElement) {
+  const pick = <T extends HTMLElement>(id: string) => root.querySelector<T>('#' + id)!
+  const input = pick<HTMLInputElement>('searchInput')
+  const options = pick('searchOptions')
+  const optBtn = pick('searchOptionsBtn')
+  const clearBtn = pick('searchClear')
 
   input.addEventListener('input', () => {
     state.search = input.value
-    el('searchClear').hidden = state.search === ''
+    clearBtn.hidden = state.search === ''
     scheduleSearch()
   })
 
   // 清空搜索：只清搜索词，不动分区，也不动面板开合
-  el('searchClear').addEventListener('click', () => {
+  clearBtn.addEventListener('click', () => {
     state.search = ''
     input.value = ''
-    el('searchClear').hidden = true
+    clearBtn.hidden = true
     input.focus()
     void runSearch()
   })
 
   // 手动触发：开了设置之后不再边打字边搜
-  el('searchGo').addEventListener('click', () => void runSearch())
+  pick('searchGo').addEventListener('click', () => void runSearch())
 
   // 大文件只在内容搜索下才有意义：勾它就连带勾上内容，撤内容也一起撤掉
-  el('searchDeep').addEventListener('change', (e) => {
+  pick('searchDeep').addEventListener('change', (e) => {
     deepSearch = (e.target as HTMLInputElement).checked
     if (!deepSearch) bigSearch = false
     void runSearch()
   })
 
-  el('searchBig').addEventListener('change', (e) => {
+  pick('searchBig').addEventListener('change', (e) => {
     bigSearch = (e.target as HTMLInputElement).checked
     if (bigSearch) deepSearch = true
     void runSearch()
@@ -544,6 +665,10 @@ function wireDrawer() {
     if (!first) return
     void openRecord(first.id, first.nameHit ? undefined : first.hits[0]?.line)
   })
+}
+
+function wireDrawer() {
+  wireSearchPane(searchContent.root)
 
   // 传按钮本身：菜单要贴着它弹，而不是跑到屏幕中间
   const newMenuBtn = el('newMenuBtn')
@@ -561,7 +686,7 @@ function wireDrawer() {
   el('batchTrashBtn').addEventListener('click', () => void batchTrash())
   el('batchClearBtn').addEventListener('click', () => {
     clearSelection()
-    renderDrawerList()
+    renderLeftContent()
   })
   el('restoreAllBtn').addEventListener('click', () => void restoreAllFromTrash())
   el('emptyTrashBtn').addEventListener('click', () => void emptyTrash())
@@ -689,7 +814,7 @@ function openMoreMenu(anchor: HTMLElement) {
     updateSettings({ plantumlRemote: !getSettings().plantumlRemote })
     paintPlantuml()
     // 立刻重画：否则已画好的图/源码块要等到下次编辑才变
-    void renderPreviewNow()
+    void previewContent.render()
   }
   menu.appendChild(plantuml)
 
@@ -727,7 +852,7 @@ function wireStatusbar() {
   // 徽标是这个功能唯一的常驻入口：任何「没结果」的状态都要能点进来
   el('stDiag').addEventListener('click', () => {
     if (!state.current) return
-    togglePanel('issues', true)
+    void activateBinding('issuesBtn', true)
   })
 }
 
@@ -1046,8 +1171,8 @@ async function openRecord(id: string, line?: number) {
   await refreshFiles()
   refreshMeta()
   updateFormatButton()
-  renderPreviewNow()
-  renderDrawerList()
+  void previewContent.render()
+  renderLeftContent()
 }
 
 /** 回到空态：删除当前文件、或别的标签页把它删了，都走这里 */
@@ -1082,7 +1207,7 @@ function wireTabs() {
   initTabs((e) => {
     if (e.removed && e.fileId && state.current?.id === e.fileId) {
       closeCurrent()
-      renderDrawerList()
+      renderLeftContent()
       toast(t('toast.tabDeleted'), 'error')
     }
     void refreshFiles()
@@ -1244,48 +1369,93 @@ function refreshMeta() {
   }
 }
 
-/** 右侧面板的三个入口：预览只对 Markdown 有意义，大纲与检查任何文件都有 */
+/** 右侧面板的入口显隐；文档视图只对 Markdown 系有意义，大纲与检查任何文件都有 */
 function syncPanelButtons() {
   const rec = state.current
-  const md = Boolean(rec) && currentLang() === 'markdown'
-  el('previewBtn').hidden = !md
+  const lang = currentLang()
+  const doc = Boolean(rec) && supportsDocView(lang, 'doc')
+  const map = Boolean(rec) && supportsDocView(lang, 'mindmap')
+  el('previewBtn').hidden = !doc
   el('outlineBtn').hidden = !rec
   el('issuesBtn').hidden = !rec
-  // 预览这一页在当前文件上不适用时，面板不收起、转到大纲：
+  el('mindmapBtn').hidden = !map
+  // 当前这一页在当前文件上不适用时，面板不收起、转到大纲：
   // 切个文件就把侧栏闪没，比留着它更烦
-  if (state.rightTab === 'preview' && !md) state.rightTab = 'outline'
-  syncPanelChrome()
+  const active = activeContentId('right')
+  const stale = (active === 'preview' && !doc) || (active === 'mindmap' && !map)
+  // 已经换过内容就别再走一遍末尾的刷新，否则同一个内容会被渲染两次
+  if (stale && state.previewOpen) {
+    void showContent('right', 'outline')
+    return
+  }
+  refreshChrome('right')
   if (state.previewOpen) renderActivePanel()
 }
 
-/** 面板标题与竖条高亮的唯一真相源；三个内容互斥显示 */
-function syncPanelChrome() {
-  const tab = state.rightTab
-  el('panelTitle').textContent = t(
-    tab === 'preview' ? 'panel.preview' : tab === 'outline' ? 'panel.outline' : 'panel.issues',
-  )
-  el('previewBody').hidden = tab !== 'preview'
-  el('outlineBody').hidden = tab !== 'outline'
-  el('issuesBody').hidden = tab !== 'issues'
-  // 打印只对着渲染后的 Markdown 有意义；选项开关只在检查页有意义
-  el('previewPrint').hidden = tab !== 'preview'
-  el('issuesOptions').hidden = tab !== 'issues' || !state.current
-  el('previewBtn').classList.toggle('is-active', state.previewOpen && tab === 'preview')
-  el('outlineBtn').classList.toggle('is-active', state.previewOpen && tab === 'outline')
-  el('issuesBtn').classList.toggle('is-active', state.previewOpen && tab === 'issues')
+/**
+ * 右侧槽位与四个绑定：唯一把「按钮 / 容器 / 内容」连起来的地方。
+ * 按钮挪位置改 binding.trigger，内容换容器只改 binding.slot。
+ */
+function registerPanelSlot() {
+  registerSlot({
+    id: 'right',
+    host: el('panelView'),
+    isOpen: () => state.previewOpen,
+    setOpen: (open) => {
+      state.previewOpen = open
+      el('rightPanel').classList.toggle('is-open', open)
+    },
+    title: el('panelTitle'),
+    actionsHost: el('panelHead'),
+    onLayout: () => requestAnimationFrame(() => state.editor?.layout()),
+  })
+  registerBinding({ trigger: 'previewBtn', slot: 'right', content: 'preview', toggle: true })
+  registerBinding({ trigger: 'outlineBtn', slot: 'right', content: 'outline', toggle: true })
+  registerBinding({ trigger: 'issuesBtn', slot: 'right', content: 'issues', toggle: true })
+  registerBinding({ trigger: 'mindmapBtn', slot: 'right', content: 'mindmap', toggle: true })
 }
 
 function closePanel() {
-  state.previewOpen = false
-  el('rightPanel').classList.remove('is-open')
-  syncPanelChrome()
-  requestAnimationFrame(() => state.editor?.layout())
+  closeSlot('right')
 }
 
-/** 右竖条的文档操作（加工、信息、两种对比）没文件就没有意义，空状态一并收起 */
+/**
+ * 左侧槽位与四条绑定：四个分区是同级内容，共用一个容器。
+ * 按钮位置（竖条 / 快捷键 / 菜单）怎么变都只改这里。
+ */
+function registerLeftSlot() {
+  registerSlot({
+    id: 'left',
+    host: el('drawerBody'),
+    isOpen: () => drawer.isOpen,
+    setOpen: (open) => {
+      if (open) void drawer.show()
+      else void drawer.hide()
+    },
+    title: el('drawerTitle'),
+    actionsHost: el('drawerInner'),
+  })
+  registerBinding({ trigger: 'railFilesBtn', slot: 'left', content: 'files', toggle: true, aria: true })
+  registerBinding({ trigger: 'railSearchBtn', slot: 'left', content: 'search', toggle: true, aria: true })
+  registerBinding({ trigger: 'railTrashBtn', slot: 'left', content: 'trash', toggle: true, aria: true })
+  registerBinding({
+    trigger: 'railSnapshotsBtn',
+    slot: 'left',
+    content: 'snapshots',
+    toggle: true,
+    aria: true,
+  })
+}
+
+/**
+ * 右竖条的文档操作（加工、信息、两种对比）没文件就没有意义，空状态一并收起。
+ * 面板入口按钮（带 data-panel-trigger）显隐由 syncPanelButtons 按语言能力决定，
+ * 这里不能按「有没有文件」一刀切，否则导图按钮会在非 Markdown 文件上冒出来。
+ */
 function syncDocActions() {
   const has = Boolean(state.current)
   document.querySelectorAll<HTMLElement>('[data-doc-action]').forEach((b) => {
+    if (b.hasAttribute('data-panel-trigger')) return
     b.hidden = !has
   })
 }
@@ -2089,84 +2259,34 @@ function diffWithFile() {
   }
 }
 
-async function refreshSnapshots() {
+async function loadSnapshots() {
   state.snapshots = state.current ? await store.listSnapshots(state.current.id) : []
-  if (state.drawerTab === 'snapshots') renderDrawerList()
+  renderSnapshotList(snapshotsContent.root, state.snapshots, {
+    restore: (id) => void restoreSnapshot(id),
+    compare: (id) => void compareSnapshot(id),
+    remove: (id) => void removeSnapshot(id),
+  })
 }
 
-/* ------------------------------------------------------------ 历史列表 */
+/** 保存后刷新：只在用户正看着快照页时才重画，别白白重建列表 */
+async function refreshSnapshots() {
+  if (!snapshotsContent.isVisible()) return
+  await loadSnapshots()
+}
 
 async function refreshFiles() {
   state.files = await store.listNodes()
-  // 回收站与文件树共用同一份 nodes 快照，两个页签都要跟着重绘
-  if (state.drawerTab !== 'snapshots') renderDrawerList()
-  syncDrawerFoot()
+  // 回收站与文件树共用同一份 nodes 快照，两个页签都要跟着重绘；
+  // 快照页看的是历史不是文件，不用跟着重建
+  if (!snapshotsContent.isVisible()) renderLeftContent()
+  refreshChrome('left')
 }
 
-function renderDrawerList() {
-  if (state.drawerTab === 'search') {
-    renderSearchPane()
-    return
-  }
-
-  const host = el('drawerList')
-
-  if (state.drawerTab === 'snapshots') {
-    renderSnapshotList(host, state.snapshots, {
-      restore: (id) => void restoreSnapshot(id),
-      compare: (id) => void compareSnapshot(id),
-      remove: (id) => void removeSnapshot(id),
-    })
-    return
-  }
-
-  if (state.drawerTab === 'trash') {
-    const items = trash.trashItems(state.files)
-    const index = buildTree(state.files)
-    renderTrashList(
-      host,
-      items,
-      {
-        restore: (id) => void restoreFromTrash(id),
-        purge: (id) => void purgeFromTrash(id),
-      },
-      {
-        childCount: (id) => state.files.filter((n) => n.parentId === id).length,
-        pathOf: (id) => nodePath(index, id),
-      },
-    )
-    return
-  }
-
-  renderTree(host, {
-    index: buildTree(state.files),
-    currentId: state.current?.id ?? null,
-    expanded: state.expanded,
-    // 搜索已经独立成页，文件树不再被搜索词过滤
-    filter: '',
-    renamingId: state.renamingId,
-    dirtyId: state.dirty && state.current ? state.current.id : null,
-    selection: state.selection,
-    handlers: {
-      open: (id) => void openRecord(id),
-      toggle: (id) => toggleFolder(id),
-      requestRename: (id) => beginRename(id),
-      rename: (id, name) => commitRename(id, name),
-      cancelRename: () => {
-        state.renamingId = null
-        renderDrawerList()
-      },
-      move: (id) => void moveDialog(id),
-      trash: (id) => void trashNode(id),
-      compare: (id) => void compareWithFile(id),
-      exportNode: (id) => exportFolder(id),
-      create: (parentId, kind) => void createNode(kind, parentId),
-      select: (id, mode) => selectNode(id, mode),
-      drop: (id, parentId) => void dropMove(id, parentId),
-      openTab: (id) => void openFileInTab(id),
-      elsewhere: (id) => probeOpenElsewhere(id),
-    },
-  })
+/** 重画左侧当前内容；要更新别的分区请直接调那个内容的 render */
+function renderLeftContent() {
+  const id = activeContentId('left')
+  syncRailCounts()
+  void (id ? contentById(id) : null)?.render()
 }
 
 /* -------------------------------------------------------- 树的增删改 */
@@ -2176,7 +2296,7 @@ function toggleFolder(id: string): void {
   else state.expanded.add(id)
   saveExpanded()
   clearSelection()
-  renderDrawerList()
+  renderLeftContent()
 }
 
 /* -------------------------------------------------------- 多选（§13.2） */
@@ -2185,7 +2305,7 @@ function clearSelection(): void {
   if (!state.selection.size && !state.anchor) return
   state.selection.clear()
   state.anchor = null
-  syncDrawerFoot()
+  refreshChrome('left')
 }
 
 /** 同一父级下的兄弟 id，顺序与树一致：范围选择只在这个序列上取区间 */
@@ -2216,8 +2336,8 @@ function selectNode(id: string, mode: 'toggle' | 'range'): void {
     }
   }
 
-  syncDrawerFoot()
-  renderDrawerList()
+  refreshChrome('left')
+  renderLeftContent()
 }
 
 /**
@@ -2233,8 +2353,8 @@ function selectSiblings(): void {
   if (!list.length) return
   state.selection = new Set(list.map((n) => n.id))
   state.anchor = base?.id ?? list[0].id
-  syncDrawerFoot()
-  renderDrawerList()
+  refreshChrome('left')
+  renderLeftContent()
 }
 
 /** 选中项里如果已经有父级，子项就不必单列，避免重复导出/重复删除 */
@@ -2345,7 +2465,7 @@ function batchMove(): void {
 
 function beginRename(id: string): void {
   state.renamingId = id
-  renderDrawerList()
+  renderLeftContent()
 }
 
 /** 新建落在哪一层：跟着当前文件走，否则放根目录 */
@@ -2379,10 +2499,9 @@ async function createNode(
   parentId: string | null = targetParent(),
 ): Promise<void> {
   // 回到文件页并把选择归位：新节点要能出现在列表里
-  state.drawerTab = 'files'
   state.renamingId = null
   clearSelection()
-  syncLeftPanel()
+  await showContent('left', 'files')
   // 建完立刻进重命名，面板收着的话输入框根本看不见
   if (!drawer.isOpen) void drawer.show()
 
@@ -2442,12 +2561,12 @@ async function commitRename(id: string, raw: string): Promise<boolean> {
   if (!valid.ok) {
     toast(t(nameErrorKey(valid.reason)), 'error')
     state.renamingId = null
-    renderDrawerList()
+    renderLeftContent()
     return false
   }
   if (valid.name === node.name) {
     state.renamingId = null
-    renderDrawerList()
+    renderLeftContent()
     return true
   }
 
@@ -2455,7 +2574,7 @@ async function commitRename(id: string, raw: string): Promise<boolean> {
   if (taken.has(normalizeName(valid.name))) {
     toast(t('err.nameDuplicate'), 'error')
     state.renamingId = null
-    renderDrawerList()
+    renderLeftContent()
     return false
   }
 
@@ -2921,35 +3040,12 @@ function wirePanelResizer() {
   })
 }
 
-function togglePanel(tab: RightTab, force?: boolean) {
-  const rec = state.current
-  if (!rec) return
-  if (tab === 'preview' && currentLang() !== 'markdown') {
-    toast(t('toast.previewUnsupported'))
-    return
-  }
-  // 再点当前这一页才是收起；点另一边是换页
-  const want = force ?? !(state.previewOpen && state.rightTab === tab)
-  state.rightTab = tab
-  state.previewOpen = want
-  el('rightPanel').classList.toggle('is-open', want)
-  syncPanelChrome()
-  if (want) renderActivePanel()
-  requestAnimationFrame(() => state.editor?.layout())
-}
-
-/** 面板只有一页是可见的，切换/刷新都从这里走，免得几页抢着写 DOM */
+/** 面板只有一页可见，刷新都走内容实例，免得几页抢着写 DOM */
 function renderActivePanel() {
   if (!state.previewOpen) return
-  if (state.rightTab === 'outline') {
-    renderOutlineNow()
-    return
-  }
-  if (state.rightTab === 'issues') {
-    renderIssuesPanel()
-    return
-  }
-  if (currentLang() === 'markdown') void renderPreviewNow()
+  const id = activeContentId('right')
+  const content = id ? contentById(id) : null
+  void content?.render()
 }
 
 let previewSeq = 0
@@ -2963,25 +3059,24 @@ function currentTheme(): 'dark' | 'light' {
  * 异步：拿到 HTML 时文档可能已经变了，用 seq 丢弃过期结果。
  * 返回 Promise 供「必须等渲染落地」的场景（打印）await。
  */
-async function renderPreviewNow(): Promise<void> {
-  if (!state.previewOpen || state.rightTab !== 'preview') return
+async function renderPreviewInto(host: HTMLElement): Promise<void> {
+  if (!previewContent.isVisible()) return
   // 预览只画 Markdown：切到日志之类的文件时由 syncPanelButtons 转到大纲，
   // 别把几十 MB 文本丢给 marked
-  if (currentLang() !== 'markdown') return
-  const body = el('previewBody')
+  if (!isMarkdownLike(currentLang())) return
   const seq = ++previewSeq
-  const scrollTop = body.scrollTop
+  const scrollTop = host.scrollTop
   const text = state.text
   const html = await renderMarkdown(text)
   // 渲染是异步的：拿到结果时文档、面板或主题可能已经变了
-  if (seq !== previewSeq || !state.previewOpen || state.rightTab !== 'preview') return
-  body.innerHTML = html
+  if (seq !== previewSeq || !previewContent.isVisible()) return
+  host.innerHTML = html
   // 先复原一次滚动位置（没有图表的文档就到此为止），
   // 图表从占位换成 svg 会改变高度，渲染完再校正一次
   if (seq !== previewSeq) return
-  body.scrollTop = scrollTop
-  await hydrateDiagrams(body, seq)
-  if (seq === previewSeq) body.scrollTop = scrollTop
+  host.scrollTop = scrollTop
+  await hydrateDiagrams(host, seq)
+  if (seq === previewSeq) host.scrollTop = scrollTop
 }
 
 /** 预览里的图表语言；新增图表库时只改这一处 */
@@ -2998,32 +3093,66 @@ async function hydrateDiagrams(body: HTMLElement, seq: number) {
   const theme = currentTheme()
   if (body.querySelector('.mermaid-block')) {
     const { renderMermaidBlocks } = await import('../ui/mermaid')
-    if (seq !== previewSeq || !state.previewOpen) return
+    if (seq !== previewSeq || !previewContent.isVisible()) return
     await renderMermaidBlocks(body, theme)
   }
   if (body.querySelector('.graphviz-block')) {
     const { renderGraphvizBlocks } = await import('../ui/graphviz')
-    if (seq !== previewSeq || !state.previewOpen) return
+    if (seq !== previewSeq || !previewContent.isVisible()) return
     await renderGraphvizBlocks(body, theme)
   }
   if (body.querySelector('.plantuml-block')) {
     const { renderPlantumlBlocks } = await import('../ui/plantuml')
-    if (seq !== previewSeq || !state.previewOpen) return
+    if (seq !== previewSeq || !previewContent.isVisible()) return
     await renderPlantumlBlocks(body, theme)
   }
 }
 
 /** 换主题后图表要按新配色重画，正文本身走 CSS 变量不用重建 */
 function refreshPreviewTheme() {
-  if (!state.previewOpen) return
-  if (!el('previewBody').querySelector(DIAGRAM_SELECTOR)) return
-  void renderPreviewNow()
+  if (!previewContent.isVisible()) return
+  if (!previewContent.root.querySelector(DIAGRAM_SELECTOR)) return
+  void renderPreviewInto(previewContent.root)
 }
 
+let mindmapTimer = 0
+
 function schedulePreview() {
-  if (!state.previewOpen || state.rightTab !== 'preview') return
+  // 文本变了：导图和预览是同一份文本的两种画法，一起排队重画
+  scheduleMindmap()
+  if (!previewContent.isVisible()) return
   window.clearTimeout(previewTimer)
-  previewTimer = window.setTimeout(() => void renderPreviewNow(), 250)
+  previewTimer = window.setTimeout(() => void renderPreviewInto(previewContent.root), 250)
+}
+
+/** 导图要建整棵树再布局，比预览重，防抖拉长一点 */
+function scheduleMindmap() {
+  if (!mindmapContent.isVisible()) return
+  window.clearTimeout(mindmapTimer)
+  mindmapTimer = window.setTimeout(() => {
+    renderMindmapInto(mindmapContent.root)
+  }, 350)
+}
+
+/**
+ * 导图的渲染入口。
+ *
+ * 数据树由 mindmap.ts 建好交给 markmap，布局/连线/缩放/折叠都由引擎管。
+ * 大文件不整块放弃：建树时按节点数截断，截断点之前的偏移和原文一致，点节点仍能跳行。
+ */
+function renderMindmapInto(host: HTMLElement): void {
+  if (!mindmapContent.isVisible()) return
+  if (!supportsDocView(currentLang(), 'mindmap')) return
+  renderMindmap(host, state.text, {
+    // 只有换文件才把视野归零；打字触发的重画保留当前缩放与位置
+    viewKey: state.current?.id ?? '',
+    // 导出 SVG 用当前文档名，导出面板里显示的原名比「mindmap.svg」有用
+    exportName: state.current?.name ?? '',
+    onJump: (line) => {
+      state.editor?.goToLine(line)
+      state.editor?.focus()
+    },
+  })
 }
 
 /* -------------------------------------------------------------- 代码检查 */
@@ -3064,11 +3193,34 @@ function diagIgnore(): string[] {
   return Array.isArray(list) ? list : []
 }
 
+/** Markdown 细则的逐条开关：只存和默认值不同的，缺省由 MD_RULES 决定 */
+function diagMdRules(): Record<string, boolean> {
+  const rules = getSettings().mdRules
+  return rules && typeof rules === 'object' ? rules : {}
+}
+
+/** MD013 的行长阈值；坏值一律当默认的 120 */
+function diagMdLineLength(): number {
+  const width = getSettings().mdLineLength
+  return Number.isFinite(width) && width >= 40 ? Math.round(width) : 120
+}
+
 function diagKeyFor(text: string, lang: LangId, name: string, checks: ChecksSettings): string {
   // 忽略词变了结果也会变，必须进 key，否则改完设置面板还挂旧波浪线
   const ignore = diagIgnore()
   const ignoreTag = ignore.length > 0 ? contentHash(ignore.join(',')) : ''
-  return `${DIAG_VERSION}|${contentHash(text)}|${lang}|${name}|${checksMask(checks)}|${ignoreTag}`
+  // 细则开关与行长阈值同理：动了就得作废旧结果，不然波浪线跟面板对不上
+  const mdRules = diagMdRules()
+  const mdTag =
+    Object.keys(mdRules).length > 0
+      ? contentHash(
+          Object.entries(mdRules)
+            .sort(([a], [b]) => (a < b ? -1 : 1))
+            .map(([id, on]) => `${id}:${on ? 1 : 0}`)
+            .join(',') + `|${diagMdLineLength()}`,
+        )
+      : `|${diagMdLineLength()}`
+  return `${DIAG_VERSION}|${contentHash(text)}|${lang}|${name}|${checksMask(checks)}|${ignoreTag}|${mdTag}`
 }
 
 function isSpellCheck(id: CheckKind): boolean {
@@ -3087,7 +3239,7 @@ function watchDictReady(): void {
   })
   // 失败时不重跑（没结果可出），但面板要把空态从「无问题」改成「词典不可用」
   onDictFailed(() => {
-    if (state.previewOpen && state.rightTab === 'issues') renderIssuesPanel()
+    if (issuesContent.isVisible()) renderIssuesPanel(issuesContent.root)
   })
 }
 
@@ -3178,7 +3330,15 @@ function runDiagnostics(): void {
 
   const commit = () => {
     if (seq !== diagSeq) return
-    const result = analyze({ text, lang, name: rec.name, checks, ignore: diagIgnore() })
+    const result = analyze({
+      text,
+      lang,
+      name: rec.name,
+      checks,
+      ignore: diagIgnore(),
+      mdRules: diagMdRules(),
+      mdLineLength: diagMdLineLength(),
+    })
     // 算的过程中又改了/又切了文件：这一份已经过期，丢掉
     if (seq !== diagSeq || state.current?.id !== rec.id) return
     diagIssues = result.issues
@@ -3198,7 +3358,7 @@ function runDiagnostics(): void {
 function applyDiagnostics(): void {
   state.editor?.setIssues(toRendered(diagIssues))
   syncDiagBadge()
-  if (state.previewOpen && state.rightTab === 'issues') renderIssuesPanel()
+  if (issuesContent.isVisible()) renderIssuesPanel(issuesContent.root)
 }
 
 /**
@@ -3245,7 +3405,22 @@ function syncDiagBadge(): void {
   sb.setDiagnostics(errors > 0 || warnings > 0 ? 'ok' : 'clean', errors, warnings)
 }
 
-function renderIssuesPanel(): void {
+/**
+ * 每条 Markdown 细则这次报了几条：开关旁边标个数，一眼看出哪条在吵。
+ * 数的是**本次报告里**的条数（单条规则有产量上限，见 MAX_PER_RULE），不是全文命中数。
+ */
+function mdRuleCounts(): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const issue of diagIssues) {
+    if (issue.kind !== 'mdLint') continue
+    // key 形如 `md.MD009`：剥前缀而不是按固定长度切，前缀改了也不会静默串号
+    const id = String(issue.key).replace(/^md\./, '')
+    counts[id] = (counts[id] ?? 0) + 1
+  }
+  return counts
+}
+
+function renderIssuesPanel(host: HTMLElement): void {
   const rec = state.current
   const checks = diagChecks()
   const lang = currentLang()
@@ -3260,7 +3435,7 @@ function renderIssuesPanel(): void {
   else if (diagBusy || !diagRan) phase = 'running'
 
   renderIssues(
-    el('issuesBody'),
+    host,
     {
       phase,
       issues: diagIssues,
@@ -3272,6 +3447,9 @@ function renderIssuesPanel(): void {
       availability,
       naReason: rec && phase === 'na' ? dominantReason(checks, lang, rec.name) : null,
       spellIgnore: diagIgnore(),
+      mdRules: [...enabledMdRules(diagMdRules())],
+      mdCounts: mdRuleCounts(),
+      mdLineLength: diagMdLineLength(),
       dictFailed: dictFailed(),
       lang,
     },
@@ -3287,7 +3465,7 @@ function renderIssuesPanel(): void {
         diagRan = false
         state.editor?.setIssues([])
         scheduleDiagnostics(0)
-        renderIssuesPanel()
+        renderIssuesPanel(host)
       },
       onJump: (issue: Issue) => {
         state.editor?.goToLine(lineOfOffset(state.text, issue.from))
@@ -3296,7 +3474,7 @@ function renderIssuesPanel(): void {
       onRerun: () => {
         diagKey = ''
         scheduleDiagnostics(0)
-        renderIssuesPanel()
+        renderIssuesPanel(host)
       },
       onSpellIgnoreChange: (raw: string) => {
         updateSettings({ spellIgnore: parseIgnoreWords(raw) })
@@ -3306,7 +3484,29 @@ function renderIssuesPanel(): void {
         diagRan = false
         state.editor?.setIssues([])
         scheduleDiagnostics(0)
-        renderIssuesPanel()
+        renderIssuesPanel(host)
+      },
+      onToggleMdRule: (id: string) => {
+        // 只写「和默认值不一样」的：关掉默认开的写 false，打开默认关的写 true
+        const on = enabledMdRules(diagMdRules())
+        updateSettings({ mdRules: { ...diagMdRules(), [id]: !on.has(id) } })
+        diagKey = ''
+        diagIssues = []
+        diagRan = false
+        state.editor?.setIssues([])
+        scheduleDiagnostics(0)
+        renderIssuesPanel(host)
+      },
+      onMdLineLengthChange: (raw: string) => {
+        const width = Number.parseInt(raw, 10)
+        // 40 以下中文一段话就超了，400 以上等于关掉这条规则
+        updateSettings({ mdLineLength: Number.isFinite(width) ? Math.min(400, Math.max(40, width)) : 120 })
+        diagKey = ''
+        diagIssues = []
+        diagRan = false
+        state.editor?.setIssues([])
+        scheduleDiagnostics(0)
+        renderIssuesPanel(host)
       },
     },
   )
@@ -3329,8 +3529,7 @@ let outlineTimer = 0
 /** 光标行，用来在大纲里标出「你在哪一节」 */
 let cursorLine = 1
 
-function renderOutlineNow() {
-  const host = el('outlineBody')
+function renderOutlineInto(host: HTMLElement) {
   if (!state.current) {
     outlineItems = []
     host.replaceChildren()
@@ -3363,15 +3562,15 @@ function renderOutlineNow() {
 }
 
 function scheduleOutline() {
-  if (!state.previewOpen || state.rightTab !== 'outline') return
+  if (!outlineContent.isVisible()) return
   window.clearTimeout(outlineTimer)
-  outlineTimer = window.setTimeout(renderOutlineNow, 350)
+  outlineTimer = window.setTimeout(() => renderOutlineInto(outlineContent.root), 350)
 }
 
 /** 标出光标所在条目；只在滚出可视范围时才滚动，否则每敲一个字整列都在抖 */
 function syncOutlineActive() {
-  if (!state.previewOpen || state.rightTab !== 'outline') return
-  const host = el('outlineBody')
+  if (!outlineContent.isVisible()) return
+  const host = outlineContent.root
   const index = activeIndex(outlineItems, cursorLine)
   const nodes = host.querySelectorAll<HTMLElement>('.outline-item')
   nodes.forEach((node, i) => node.classList.toggle('is-active', i === index))
@@ -3442,7 +3641,7 @@ function wireKeyboard() {
 
     // Cmd/Ctrl+A：抽屉里选中同层，编辑器里保持原生全选
     if (mod && !e.shiftKey && !e.altKey && key === 'a' && drawerHasKeys()) {
-      if (state.drawerTab === 'files') {
+      if (filesContent.isVisible()) {
         e.preventDefault()
         selectSiblings()
         return
@@ -3453,8 +3652,7 @@ function wireKeyboard() {
     if (e.key === 'F2' && state.current && !e.metaKey && !e.ctrlKey) {
       e.preventDefault()
       const id = state.current.id
-      switchDrawerTab('files')
-      void drawer.show().then(() => beginRename(id))
+      void showContent('left', 'files').then(() => beginRename(id))
       return
     }
 
@@ -3506,7 +3704,7 @@ function wireKeyboard() {
     if (e.key === 'Escape' && drawer.isOpen && state.selection.size > 0 && drawerHasKeys()) {
       e.preventDefault()
       clearSelection()
-      renderDrawerList()
+      renderLeftContent()
       return
     }
     if (e.key === 'Escape' && findBar?.isOpen()) {
@@ -3577,18 +3775,21 @@ function scheduleSearch() {
 }
 
 function renderSearchPane() {
-  const options = el('searchOptions')
-  const optBtn = el('searchOptionsBtn')
-  el('searchClear').hidden = state.search === ''
-  el<HTMLInputElement>('searchDeep').checked = deepSearch
-  el<HTMLInputElement>('searchBig').checked = bigSearch
+  // 这一页的骨架归 searchContent 所有，随时可能不在文档里：一律从自己的树里取
+  const pick = <T extends HTMLElement>(id: string) => searchContent.root.querySelector<T>('#' + id)!
+  const options = pick('searchOptions')
+  const optBtn = pick('searchOptionsBtn')
+  const goBtn = pick('searchGo')
+  pick('searchClear').hidden = state.search === ''
+  pick<HTMLInputElement>('searchDeep').checked = deepSearch
+  pick<HTMLInputElement>('searchBig').checked = bigSearch
   // 放大镜按钮只在开了设置时出现；词改过就点亮，提示该按了
-  el('searchGo').hidden = !manualSearch()
-  el('searchGo').classList.toggle('is-ready', searchStale)
+  goBtn.hidden = !manualSearch()
+  goBtn.classList.toggle('is-ready', searchStale)
   optBtn.classList.toggle('is-on', manualSearch() || !options.hidden)
   optBtn.setAttribute('aria-expanded', String(!options.hidden))
   renderSearchResults(
-    el('searchResults'),
+    pick('searchResults'),
     {
       query: state.search.trim(),
       deep: deepSearch,
@@ -3724,32 +3925,32 @@ async function scanContents(query: string, seq: number, index: ReturnType<typeof
     // 一直没有命中时进度数字也别僵着，扫过 20 条也刷一次
     if (drawn % 3 === 0 || searchScanned - painted >= 20) {
       painted = searchScanned
-      renderSearchPane()
+      void searchContent.render()
     }
   }
 }
 
 /** 命中的是文件夹：切回文件页、展开祖先再定位 —— 搜索页里没有树可展开 */
-function revealSearchHit(id: string) {
-  switchDrawerTab('files')
+async function revealSearchHit(id: string) {
   let parent = state.files.find((n) => n.id === id)?.parentId ?? null
   while (parent) {
     state.expanded.add(parent)
     parent = state.files.find((n) => n.id === parent)?.parentId ?? null
   }
   saveExpanded()
-  renderDrawerList()
+  // 祖先先展开再挂载，免得先画一遍收起的树再重画
+  await showContent('left', 'files')
   revealNode(id)
 }
 
 /** Cmd/Ctrl+P：直接落到搜索页并聚焦输入框，比在文件树里翻快得多 */
 function openQuickSwitch() {
-  switchDrawerTab('search')
-  el('searchOptions').hidden = true
-  void drawer.show().then(() => {
-    const input = el<HTMLInputElement>('searchInput')
-    input.focus()
-    input.select()
+  const options = searchContent.root.querySelector<HTMLElement>('#searchOptions')
+  if (options) options.hidden = true
+  void showContent('left', 'search').then(() => {
+    const input = searchContent.root.querySelector<HTMLInputElement>('#searchInput')
+    input?.focus()
+    input?.select()
   })
 }
 

@@ -41,7 +41,17 @@
       "highlight.js/*": ["./vendor/highlight.js/*"],
       "mermaid": ["./vendor/mermaid"],
       "property-information": ["./vendor/property-information"],
-      "parse5": ["./vendor/parse5"]
+      "parse5": ["./vendor/parse5"],
+      "markmap-*": ["./vendor/markmap-*"],
+      "d3": ["./vendor/d3"],
+      "d3-*": ["./vendor/d3-*"],
+      "internmap": ["./vendor/internmap"],
+      "delaunator": ["./vendor/delaunator"],
+      "robust-predicates": ["./vendor/robust-predicates"],
+      "@babel/runtime": ["./vendor/@babel/runtime"],
+      "@babel/runtime/*": ["./vendor/@babel/runtime/*"],
+      "@gera2ld/*": ["./vendor/@gera2ld/*"],
+      "npm2url": ["./vendor/npm2url"]
     }
   },
   "include": ["src", "vite.config.ts"]

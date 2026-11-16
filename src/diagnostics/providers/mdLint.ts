@@ -52,10 +52,31 @@ export const MD_RULES: readonly MdRule[] = [
 
 const DEFAULT_ON = new Set(MD_RULES.filter((rule) => rule.defaultOn).map((rule) => rule.id))
 
-/** 单条规则的产量上限：一条规则刷满整个面板等于没有面板 */
-const MAX_PER_RULE = 20
+/**
+ * 用户逐条开关：只存「和默认值不一样」的那几条，默认值仍由 MD_RULES 决定。
+ * 这样以后调默认值，没动过的规则会跟着走。
+ */
+export function enabledMdRules(overrides?: Record<string, boolean>): Set<string> {
+  const set = new Set(DEFAULT_ON)
+  if (!overrides) return set
+  for (const [id, on] of Object.entries(overrides)) {
+    if (!MD_RULES.some((rule) => rule.id === id)) continue
+    if (on) set.add(id)
+    else set.delete(id)
+  }
+  return set
+}
 
-const MAX_LINE = 120
+/** 单条规则的产量上限：一条规则刷满整个面板等于没有面板 */
+export const MAX_PER_RULE = 20
+
+/** MD013 的默认行长阈值（中文写作基本用不上，默认关） */
+export const DEFAULT_MAX_LINE = 120
+
+export interface MdLintOptions {
+  /** MD013 行长上限，缺省 120 */
+  maxLine?: number
+}
 
 /* ------------------------------------------------------------ 正则 */
 
@@ -139,7 +160,11 @@ interface Reporter {
   (id: string, from: number, to: number, params?: Record<string, string | number>): void
 }
 
-export function mdLintIssues(text: string, enabled: ReadonlySet<string> = DEFAULT_ON): Issue[] {
+export function mdLintIssues(
+  text: string,
+  enabled: ReadonlySet<string> = DEFAULT_ON,
+  options: MdLintOptions = {},
+): Issue[] {
   const lines = toLines(text)
   const skip = maskLines(lines)
   const issues: Issue[] = []
@@ -393,12 +418,13 @@ export function mdLintIssues(text: string, enabled: ReadonlySet<string> = DEFAUL
     }
   })
 
-  /* ---- MD013 行长（默认关） */
+  /* ---- MD013 行长（默认关，阈值可配） */
   if (on('MD013')) {
+    const maxLine = options.maxLine && options.maxLine > 0 ? options.maxLine : DEFAULT_MAX_LINE
     lines.forEach((line, i) => {
       if (skip[i] || isIndentedCode(line.text)) return
       const width = Array.from(line.text).length
-      if (width > MAX_LINE) report('MD013', line.start, line.start + line.text.length, { n: width })
+      if (width > maxLine) report('MD013', line.start, line.start + line.text.length, { n: width })
     })
   }
 
