@@ -55,6 +55,7 @@ export const zh = {
   'rail.prefetchFailed': '{n} 项未完成，点击重试',
   'rail.prefetchError': '离线包下载失败，点击重试',
   'rail.prefetchReady': '离线包已就绪，断网也能用',
+  'rail.prefetchDev': '开发构建没有 Service Worker，离线包不可用（此处仅用于查看样式）',
 
 
   'empty.title': '打开一个文件开始',

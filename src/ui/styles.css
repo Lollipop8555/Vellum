@@ -507,6 +507,16 @@ svg.eng-ico {
 
 /* ---------- 离线包进度环 ---------- */
 
+/**
+ * 环、花括号、就绪点必须叠在同一格里。
+ * .rail-btn 是 `display:grid; place-items:center` 且没有显式轨道，子元素会各占一行，
+ * 26 + 15 + 4 撑破 30px 的按钮，环被顶到上面、符号掉到中间 —— 三层都偏离中心。
+ */
+.rail-fetch > * {
+  grid-area: 1 / 1;
+  place-self: center;
+}
+
 /* 图标的 18px 规则不适用于环，这里必须盖回去 */
 .rail-fetch svg.fetch-ring {
   width: 26px;
@@ -531,14 +541,27 @@ svg.eng-ico {
   transition: stroke-dashoffset 260ms ease;
 }
 
-.rail-fetch .fetch-glyph {
-  position: absolute;
-  font-family: var(--mono-font);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: -0.4px;
+/* 花括号与感叹号都是矢量：没有字体基线和字面宽度，居中完全交给 grid */
+.rail-fetch svg.fetch-glyph {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   color: var(--c-faint);
-  transition: color 160ms ease;
+  transition: color 160ms ease, opacity 200ms ease;
+}
+
+/* 感叹号的点用填充，且必须写在 CSS 里——svg 的 fill:none 会盖掉表现属性 */
+.rail-fetch .glyph-error circle {
+  fill: currentColor;
+  stroke: none;
+}
+
+.rail-fetch .glyph-error {
+  display: none;
 }
 
 .rail-fetch[data-state='busy'] {
@@ -555,13 +578,18 @@ svg.eng-ico {
 
 .rail-fetch[data-state='error'] .fetch-glyph {
   color: var(--c-warn);
-  font-size: 11px;
-  letter-spacing: 0;
 }
 
-/* 就绪态：环和 {} 一起退场，只留一个安静的点 */
+.rail-fetch[data-state='error'] .glyph-braces {
+  display: none;
+}
+
+.rail-fetch[data-state='error'] .glyph-error {
+  display: inline;
+}
+
+/* 就绪态：环和括号一起退场，只留一个安静的点 */
 .rail-fetch .fetch-dot {
-  position: absolute;
   width: 4px;
   height: 4px;
   border-radius: 50%;
@@ -595,6 +623,21 @@ svg.eng-ico {
   display: none;
 }
 
+/* dev / 无 Service Worker：显示但不可点，专门用来看样式 */
+.rail-fetch:disabled {
+  cursor: not-allowed;
+}
+
+.rail-fetch:disabled:hover {
+  background: transparent;
+  color: var(--c-dim);
+}
+
+.rail-fetch:disabled .fetch-ring,
+.rail-fetch:disabled svg.fetch-glyph {
+  opacity: 0.4;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rail-fetch .ring-fill,
   .rail-fetch .fetch-glyph,
@@ -610,6 +653,9 @@ svg.eng-ico {
   height: 30px;
   display: grid;
   place-items: center;
+  /* UA 给 button 的默认内边距是 1px 6px：内容区只剩 18px 宽，
+     26px 的进度环一进去就被左内边距推着右偏 4px。18px 的图标刚好塞满所以看不出来 */
+  padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;

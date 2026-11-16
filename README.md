@@ -184,7 +184,7 @@ npm run preview
 - **失败与暂停**：单项失败静默重试一次，仍失败则进 error 态（环变警示色、`{}` 换 `!`、title 写明项数），点击重试只补没落盘的部分。下载中点环是暂停，再点续传。
 - **与离线的关系**：预取只在 Service Worker 接管后启动，且每项落盘后再自己确认一次，所以环走到 100% 就是真的「断网全可用」。没走完就断网时，未缓存的部分会失败；切 Monaco 会降级回 CodeMirror 并给提示，不会卡在半透明编辑区。
 
-`npm run dev` 不注册 Service Worker（否则 HMR 会一直命中缓存）。验证离线用 `npm run build` + `npm run preview`：DevTools → Application 里确认 `sw.js` 已激活，Network 勾 Offline 再刷新。
+`npm run dev` 不注册 Service Worker（否则 HMR 会一直命中缓存）。此时 rail 上的离线环仍会显示，但是置灰不可点——纯粹留作调样式，省得每次改样式都要先构建一遍。验证离线用 `npm run build` + `npm run preview`：DevTools → Application 里确认 `sw.js` 已激活，Network 勾 Offline 再刷新。
 
 ## 目录
 

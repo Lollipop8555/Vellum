@@ -1635,8 +1635,9 @@ function renderPrefetch(p: PrefetchProgress) {
   if (ring instanceof SVGCircleElement) ring.style.strokeDashoffset = ringOffset(p.ratio)
 
   const pct = Math.round(p.ratio * 100)
-  const tip =
-    p.phase === 'busy'
+  const tip = btn.disabled
+    ? t('rail.prefetchDev')
+    : p.phase === 'busy'
       ? t('rail.prefetchBusy', { pct })
       : p.phase === 'paused'
         ? t('rail.prefetchPaused')
@@ -1649,15 +1650,25 @@ function renderPrefetch(p: PrefetchProgress) {
             : t('rail.prefetchIdle')
   btn.title = tip
   btn.setAttribute('aria-label', tip)
-
-  const glyph = btn.querySelector<HTMLElement>('.fetch-glyph')
-  if (glyph) glyph.textContent = p.phase === 'error' ? '!' : '{}'
+  // 括号与感叹号是 SVG，由 data-state 决定显示哪一组，这里不再改文字
 }
 
 function wirePrefetch() {
-  // dev 没有 Service Worker，环会永远停在 idle，不如不出现
-  if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return
   const btn = el<HTMLButtonElement>('railFetch')
+  if (!btn) return
+
+  // dev / 无 Service Worker：环永远停在 idle，但保留显示并置灰，
+  // 这样样式改动不用构建就能直接看效果
+  if (!import.meta.env.PROD || !('serviceWorker' in navigator)) {
+    const tip = t('rail.prefetchDev')
+    btn.hidden = false
+    btn.disabled = true
+    btn.dataset.state = 'idle'
+    btn.title = tip
+    btn.setAttribute('aria-label', tip)
+    return
+  }
+
   btn.hidden = false
   renderPrefetch(prefetcher.state())
   btn.addEventListener('click', () => {

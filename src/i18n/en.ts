@@ -57,6 +57,7 @@ export const en: Record<keyof typeof zh, string> = {
   'rail.prefetchFailed': '{n} items failed — click to retry',
   'rail.prefetchError': 'Could not download the offline pack — click to retry',
   'rail.prefetchReady': 'Offline pack ready — works without a network',
+  'rail.prefetchDev': 'Dev build has no Service Worker — offline pack unavailable (styling only)',
 
   'empty.title': 'Open a file to begin',
   'empty.hint': 'Drop a file here, or import one of the ways below.',
