@@ -53,6 +53,8 @@ export interface FileNode extends NodeBase {
   engine: EngineId
   /** 用户主动锁定（跨标签页生效，落库） */
   readOnlyUser: boolean
+  /** 非空表示这是某次 AI 会话的副本（plans/ai-assistant.md §5.4，不升版本） */
+  aiCopy?: { sessionId: string; sourceId: string; createdAt: number }
 }
 
 export interface FolderNode extends NodeBase {
@@ -136,6 +138,27 @@ export interface Settings {
    * 所以默认关，且必须由用户自己打开；打开后也只在文档里真有 plantuml 围栏时才发请求。
    */
   plantumlRemote: boolean
+  /**
+   * AI 单次回复的 token 上限。**可选**：旧设置里没有这个键，
+   * 读出来是 `undefined` 时由 `aiParams()` 补默认值，不需要任何迁移。
+   */
+  aiMaxTokens?: number
+  /** AI 采样温度；同样可选，缺省 0.7。推理模型可能忽略它 */
+  aiTemperature?: number
+  /**
+   * 是否向 provider 请求 `reasoning_content`（DeepSeek R1 一类）。
+   * 默认关：多一段思维链会明显变慢，且不是所有端点都认。
+   */
+  aiReasoning?: boolean
+  /**
+   * 消息框里哪颗键是「发送」：
+   * - `enter`：回车发送，Shift+Enter 换行；
+   * - `mod`（缺省）：⌘/Ctrl+Enter 发送，回车换行。
+   *
+   * 可选键，旧设置里没有就按 `mod` 处理（不做迁移，见 `chat.ts` 的 `sendMode()`）。
+   * 默认选 `mod` 是因为中文输入法选词也用回车，误发一句话的代价高于多点一次键。
+   */
+  aiSendKey?: 'enter' | 'mod'
 }
 
 export const DEFAULT_SETTINGS: Settings = {

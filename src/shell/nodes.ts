@@ -96,6 +96,9 @@ export function toNode(open: OpenFile): FileNode {
     eol: open.eol,
     engine: open.engine,
     readOnlyUser: open.readOnlyUser,
+    // 副本标记必须原样带回：写库时漏掉它，下一次写入就找不到自己那份副本，
+    // 于是每轮都新建一个「（AI 副本）(1)(2)…」（D-19）
+    ...(open.aiCopy ? { aiCopy: open.aiCopy } : {}),
   }
 }
 

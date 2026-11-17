@@ -27,6 +27,9 @@ import {
   type ChecksSettings,
   type Issue,
 } from '../diagnostics/types'
+import { isAiChatReady, newAiSession, openAiHistory, renderAiPanel } from '../ui/ai-panel'
+import type { DocStat } from './ai/context'
+import type { DocHost } from './ai/tools'
 import { renderIssues, type IssuesPhase } from '../ui/issues'
 import {
   ALL_LANGS,
@@ -242,6 +245,170 @@ const mindmapContent = createContent({
   render: () => renderMindmapInto(mindmapContent.root),
   onUnmount: () => destroyMindmap(mindmapContent.root),
 })
+
+/**
+ * AI 面板：唯一一个「不读 state.text」的右侧内容 —— 凭据库与当前文件无关，
+ * 所以它不带 `data-doc-action`，没有文件时也点得开（plans/ai-assistant.md §14.5）。
+ */
+const aiContent = createContent({
+  id: 'ai',
+  titleKey: 'panel.ai',
+  className: 'ai-body',
+  rootId: 'aiBody',
+  // 会话按文件落库，所以要把「当前文件」递给面板；用 getter 而不是存快照，
+  // 流式期间用户切走文件时，面板读到的才是最新的那个 id
+  render: () =>
+    renderAiPanel(aiContent.root, aiTarget, aiDocHost, () => refreshChrome('right')),
+  // 新建 / 历史两颗按钮在**标题栏**（跟预览的打印、检查的筛选同一位置），
+  // 不画在会话话题旁边 —— 那里是内容，不是面板 chrome
+  actions: ['aiNew', 'aiHistory'],
+  // 没解锁时对话区根本不存在，两颗点了没反应的图标比没有更糟
+  actionsVisible: () => isAiChatReady(),
+})
+
+/**
+ * 会话挂在哪个文件名下。
+ *
+ * 副本上要**回指原文**：AI 第一次写就建副本并打开它，如果这里返回副本自己的 id，
+ * 面板会立刻切到「副本的会话」（空的），用户看到的是「刚聊的内容凭空消失」。
+ * 同一次会话的副本共用原文那条对话，切来切去都不掉。
+ */
+function aiTarget(): { id: string; name: string } | null {
+  const file = state.current
+  if (!file) return null
+  if (file.aiCopy) {
+    const source = state.files.find((node) => node.id === file.aiCopy?.sourceId)
+    if (source && source.kind === 'file' && source.deletedAt === null) {
+      return { id: source.id, name: source.name }
+    }
+  }
+  return { id: file.id, name: file.name }
+}
+
+/* --------------------------------------------------- AI 的文档读写接口 */
+
+/**
+ * 文档版本号：任何一次内容变更（用户敲键或 AI 写入）都自增。
+ *
+ * 它是 AI 读票的「快路径」：票上的 rev 等于当前 rev，说明读完之后没人动过，
+ * 不必逐字比对；不等就走慢路径，比那一段原文还在不在。
+ */
+let docRev = 0
+
+/** 当前文件的状态。AI 只看这个，不看界面上还有什么 */
+function aiDocStat(): DocStat | null {
+  const file = state.current
+  if (!file) return null
+  const text = state.text
+  let selection: { from: number; to: number } | null = null
+  try {
+    const range = state.editor?.searchApi().getSelection()
+    if (range && range.to > range.from) selection = { from: range.from, to: range.to }
+  } catch {
+    // 编辑器正处在重建中：当成没有选区，别把整段对话挡在这里
+    selection = null
+  }
+  return {
+    fileId: file.id,
+    fileName: file.name,
+    // 空文件也算 1 行：否则 read_doc 的任何行号都会被判越界
+    totalLines: Math.max(1, text.split('\n').length),
+    totalBytes: state.dirty ? encodeUtf8(text).byteLength : file.size,
+    readOnly: file.readOnly,
+    isCopy: Boolean(file.aiCopy),
+    copySourceId: file.aiCopy?.sourceId ?? null,
+    cursor: { line: cursorLine, col: cursorCol },
+    selection,
+  }
+}
+
+/**
+ * AI 写文档的**唯一入口**。
+ *
+ * 必须是唯一入口：绕过它直接改 `state.text` 会漏掉草稿、预览、诊断、状态栏、
+ * 格式按钮……每漏一项就是一个「AI 改完但界面没跟上」的 bug。
+ */
+async function aiDocWrite(next: string): Promise<void> {
+  const file = state.current
+  if (!file) throw new Error('no-file')
+  if (next === state.text) return
+
+  docRev += 1
+  if (state.editor) state.editor.setValue(next)
+  state.text = next
+  state.dirty = true
+  draftAt = null
+  updateDirtyDot()
+  sb.setCount(next)
+  syncSizeBadge()
+  schedulePreview()
+  scheduleOutline()
+  scheduleDiagnostics()
+  scheduleAutosave()
+  updateFormatButton()
+  findBar?.refresh()
+  // 立刻落草稿：AI 一轮改完用户随手刷新，不能只活在内存里
+  await persistDraft()
+}
+
+/**
+ * 给这次会话建一份 AI 副本并打开（§8 懒创建）。
+ *
+ * 同一会话只建一份：连着两轮改不该每轮多一个文件。已有的副本直接打开。
+ */
+async function aiDocCreateCopy(sessionId: string): Promise<{ id: string; name: string }> {
+  const source = state.current
+  if (!source) throw new Error('no-file')
+
+  const existing = state.files.find(
+    (node) =>
+      node.kind === 'file' &&
+      node.deletedAt === null &&
+      node.id !== source.id &&
+      node.aiCopy?.sessionId === sessionId &&
+      node.aiCopy?.sourceId === source.id,
+  )
+  if (existing) {
+    await openRecord(existing.id)
+    return { id: existing.id, name: existing.name }
+  }
+
+  const dot = source.name.lastIndexOf('.')
+  const stem = dot > 0 ? source.name.slice(0, dot) : source.name
+  const ext = dot > 0 ? source.name.slice(dot) : ''
+  const name = dedupeName(
+    `${stem}${t('ai.copyName', { name: '' })}${ext}`,
+    takenNames(state.files, source.parentId),
+  )
+  const text = state.text
+  const node = createFileNode({
+    name,
+    parentId: source.parentId,
+    lang: source.lang,
+    langSource: source.langSource,
+    encoding: 'utf-8',
+    eol: source.eol,
+    engine: state.engineId,
+    size: encodeUtf8(text).byteLength,
+  })
+  node.aiCopy = { sessionId, sourceId: source.id, createdAt: Date.now() }
+
+  await store.putNode(node)
+  await store.putContent({ id: node.id, blob: new Blob([text], { type: 'text/plain' }) })
+  await refreshFiles()
+  await openRecord(node.id)
+  if (!state.current || state.current.id !== node.id) throw new Error('copy-not-open')
+  return { id: node.id, name: node.name }
+}
+
+/** AI 面板拿到的全部文档能力（L5 边界，不多给一个字段） */
+const aiDocHost: DocHost = {
+  stat: aiDocStat,
+  text: () => state.text,
+  rev: () => docRev,
+  createCopy: aiDocCreateCopy,
+  write: aiDocWrite,
+}
 
 /* --------------------------------------------------------- 左侧抽屉内容 */
 
@@ -536,6 +703,10 @@ function wireRails() {
     state.editor?.focus()
   })
   el('previewClose').addEventListener('click', () => closePanel())
+  // AI 标题栏：新建会话 / 历史会话。真正的状态在 ui/ai/chat.ts 里，
+  // app 只做转发——面板不该反过来 import app（会成环）
+  el('aiNew').addEventListener('click', () => newAiSession())
+  el('aiHistory').addEventListener('click', () => openAiHistory(el('aiHistory')))
   el('previewPrint').addEventListener('click', () => {
     // 渲染是异步的，`window.print()` 不会等 Promise：
     // 必须先把这一轮渲染（含图表）跑完，否则会打出占位源码（§12.5）
@@ -1274,6 +1445,8 @@ async function mountEditor(text: string, offset = 0) {
     onChange: (v) => {
       state.text = v
       state.dirty = true
+      // 用户敲一个字，AI 手上的读票就全部「待复核」：rev 变了就走慢路径比对原文
+      docRev += 1
       // 这一版内容还没进草稿，状态栏先别急着说「草稿已存」
       draftAt = null
       updateDirtyDot()
@@ -1289,6 +1462,7 @@ async function mountEditor(text: string, offset = 0) {
     },
     onCursor: (line, col) => {
       cursorLine = line
+      cursorCol = col
       sb.setCursor(line, col)
       syncOutlineActive()
     },
@@ -1409,6 +1583,7 @@ function registerPanelSlot() {
     actionsHost: el('panelHead'),
     onLayout: () => requestAnimationFrame(() => state.editor?.layout()),
   })
+  registerBinding({ trigger: 'aiBtn', slot: 'right', content: 'ai', toggle: true })
   registerBinding({ trigger: 'previewBtn', slot: 'right', content: 'preview', toggle: true })
   registerBinding({ trigger: 'outlineBtn', slot: 'right', content: 'outline', toggle: true })
   registerBinding({ trigger: 'issuesBtn', slot: 'right', content: 'issues', toggle: true })
@@ -3528,6 +3703,8 @@ let outlineItems: OutlineItem[] = []
 let outlineTimer = 0
 /** 光标行，用来在大纲里标出「你在哪一节」 */
 let cursorLine = 1
+/** 光标列（1 基）。AI 的位置块要报「第几行第几列」，只报行会让模型猜错缩进位置 */
+let cursorCol = 1
 
 function renderOutlineInto(host: HTMLElement) {
   if (!state.current) {

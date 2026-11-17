@@ -239,27 +239,44 @@ function buildRenameInput(node: NodeRecord, opts: TreeOptions): HTMLInputElement
   })
 
   let settled = false
-  const commit = () => {
+  /**
+   * 收工：改过名就交给 `rename`（成功 / 非法 / 重名都由 `commitRename` 自己清 `renamingId`），
+   * 没改动或按 Esc 放弃就本地退出编辑态 —— 只 blur 不退出的话，输入框会一直搭在树里，
+   * 用户以为还得再按一次 Esc 才能关掉。
+   */
+  const finish = (save: boolean) => {
     if (settled) return
     settled = true
     const next = input.value
-    if (next !== node.name) void opts.handlers.rename(node.id, next)
+    if (save && next !== node.name) {
+      void opts.handlers.rename(node.id, next)
+      return
+    }
+    input.value = node.name
+    opts.handlers.cancelRename(node.id)
   }
 
   input.addEventListener('keydown', (e) => {
     e.stopPropagation()
     if (e.key === 'Enter') {
       e.preventDefault()
-      commit()
+      finish(true)
     } else if (e.key === 'Escape') {
       e.preventDefault()
-      settled = true
-      input.value = node.name
-      input.blur()
-      opts.handlers.cancelRename(node.id)
+      finish(false)
     }
   })
-  input.addEventListener('blur', commit)
+  // 失去焦点即收工：点空白、点别的文件、切面板都算，不必先按 Esc。
+  // 但要躲开「列表重建把输入框换掉」的假失焦 —— 打开文件、刷新都会重画整棵树，
+  // 旧输入框被移除时浏览器也会派发 blur；重建会紧接着画出新输入框并聚焦它。
+  // 所以等一帧再问「现在焦点在谁身上」，落在新的重命名框上就当作没离开过。
+  input.addEventListener('blur', () => {
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active instanceof HTMLInputElement && active.classList.contains('tree-rename')) return
+      finish(true)
+    })
+  })
   input.addEventListener('click', (e) => e.stopPropagation())
   input.addEventListener('dblclick', (e) => e.stopPropagation())
   return input
