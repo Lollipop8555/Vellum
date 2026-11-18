@@ -34,6 +34,10 @@ export interface TreeHandlers {
   openTab(id: string): void
   /** 是否已有别的标签页开着它：菜单文案据此改写 */
   elsewhere(id: string): Promise<boolean>
+  /** AI 授权（S3）：授权给 AI / 取消授权；是否已授权决定菜单显示哪一项 */
+  grantAi(id: string): void
+  isGranted(id: string): boolean
+  revokeAi(id: string): void
 }
 
 export interface TreeOptions {
@@ -46,6 +50,8 @@ export interface TreeOptions {
   dirtyId: string | null
   /** 多选（§13.2）；只影响显示，真正的状态在 AppState 里 */
   selection: Set<string>
+  /** 每个工作区各有几条会话（W-S4 徽标 tooltip）。拿不到时显示通用文案，不阻塞渲染 */
+  workspaceSessions?: ReadonlyMap<string, number>
   handlers: TreeHandlers
 }
 
@@ -192,6 +198,16 @@ function renderRow(
       mark.className = 'item-empty'
       mark.textContent = t('list.emptyMark')
       title.appendChild(mark)
+    }
+    // 工作区徽标（W-S4）：只认节点上的 aiWorkspace，不额外查询 —— 渲染层不碰库
+    if (node.kind === 'folder' && node.aiWorkspace) {
+      const badge = document.createElement('span')
+      badge.className = 'tree-badge-ai'
+      badge.textContent = 'AI'
+      const count = opts.workspaceSessions?.get(node.aiWorkspace.id)
+      badge.title =
+        count === undefined ? t('ai.ws.badgeTip') : t('ai.ws.badgeTipCount', { n: count })
+      title.appendChild(badge)
     }
   }
   main.appendChild(title)
@@ -423,10 +439,20 @@ function showMenu(node: NodeRecord, opts: TreeOptions, at: MenuPoint): void {
       { sep: true },
     )
   }
+  const workspace = node.kind === 'folder' ? node.aiWorkspace : undefined
   items.push(
     { label: t('action.rename'), run: () => opts.handlers.requestRename(node.id) },
     { label: t('action.move'), run: () => opts.handlers.move(node.id) },
   )
+  // 工作区文件夹不提供「授权 / 取消授权」：授权该挂在工作区的 grants 上（由面板管理），
+  // 也不提供「取消 AI 标记」—— 标记没了，它的会话就变成不可达的孤儿（W-09）
+  if (!workspace) {
+    items.push(
+      opts.handlers.isGranted(node.id)
+        ? { label: t('action.revokeAi'), run: () => opts.handlers.revokeAi(node.id) }
+        : { label: t('action.grantAi'), run: () => opts.handlers.grantAi(node.id) },
+    )
+  }
   if (isFile(node)) {
     items.push(
       { key: 'tab', label: t('action.openTab'), run: () => opts.handlers.openTab(node.id) },
@@ -435,7 +461,12 @@ function showMenu(node: NodeRecord, opts: TreeOptions, at: MenuPoint): void {
   } else {
     items.push({ label: t('action.exportFolder'), run: () => opts.handlers.exportNode(node.id) })
   }
-  items.push({ label: t('action.trash'), danger: true, run: () => opts.handlers.trash(node.id) })
+  // 工作区的删除走同一套软删（进回收站、会话保留），只是名字得说清楚删的是什么
+  items.push({
+    label: workspace ? t('ai.ws.delete') : t('action.trash'),
+    danger: true,
+    run: () => opts.handlers.trash(node.id),
+  })
 
   const menu = document.createElement('div')
   menu.className = 'tree-menu'

@@ -59,6 +59,20 @@
   line-height: 1.4;
 }
 
+/* 工作区徽标（W-S4）：名字后面一个小 AI，hover 才给会话数，平时不占视觉重心 */
+.tree-badge-ai {
+  flex: 0 0 auto;
+  margin-left: 5px;
+  padding: 0 3px;
+  border: 1px solid var(--c-accent);
+  border-radius: 4px;
+  color: var(--c-accent);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.5;
+}
+
 /* 拖拽移动（P4）：into = 整行描边，before/after = 一条插入线 */
 .tree-row.is-dragging {
   opacity: 0.45;

@@ -54,11 +54,22 @@ export interface FileNode extends NodeBase {
   /** 用户主动锁定（跨标签页生效，落库） */
   readOnlyUser: boolean
   /** 非空表示这是某次 AI 会话的副本（plans/ai-assistant.md §5.4，不升版本） */
-  aiCopy?: { sessionId: string; sourceId: string; createdAt: number }
+  /** `workspaceId`：副本归属工作区（v3 W-03），同一工作区的多个会话复用它 */
+  aiCopy?: { workspaceId: string; sourceId: string; createdAt: number }
+  /** 二进制资产（plans/ai-project-v2.md P-08）：编辑器不解析，只做预览与元信息 */
+  asset?: { mime: string }
 }
 
 export interface FolderNode extends NodeBase {
   kind: 'folder'
+  /** 非空表示这是 AI 工作区（plans/ai-project-v2.md §8.3）。授权列表也记在这里 */
+  aiWorkspace?: {
+    /** 工作区 id，`ws_` + 8 位 base36；虚拟地址前缀、会话归属都用它（W-06） */
+    id: string
+    createdAt: number
+    /** 授权引用的原始节点（文件或文件夹）；AI 不可修改 */
+    grants: Array<{ refId: string; addedAt: number }>
+  }
 }
 
 export type NodeRecord = FileNode | FolderNode
@@ -159,6 +170,23 @@ export interface Settings {
    * 默认选 `mod` 是因为中文输入法选词也用回车，误发一句话的代价高于多点一次键。
    */
   aiSendKey?: 'enter' | 'mod'
+  /**
+   * AI 联网开关（默认开，缺省视为开）。管 fetch 类能力与搜索；关时相关工具不下发给模型。
+   * plans/ai-project-v2.md P-11
+   */
+  aiNetwork?: boolean
+  /**
+   * AI 脚本运行开关（默认关，缺省视为关）。关时 run_js / run_py 不下发给模型，从根源断开。
+   * plans/ai-project-v2.md P-14
+   */
+  aiScript?: boolean
+  /**
+   * AI 面板上次选中的工作区 id（`ws_xxxxxxxx`，W-10）。
+   *
+   * 只是「上次看的是哪个」，不是鉴权依据：目标不存在（被删 / 恢复前）时
+   * 面板回落到工作区列表，不报错。
+   */
+  aiLastWorkspace?: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -176,4 +204,5 @@ export const DEFAULT_SETTINGS: Settings = {
   // 与 providers/mdLint.ts 的 DEFAULT_MAX_LINE 保持一致；设置层不依赖检查实现
   mdLineLength: 120,
   plantumlRemote: false,
+  aiLastWorkspace: '',
 }

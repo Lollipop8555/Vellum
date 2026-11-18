@@ -136,6 +136,22 @@ export function isAiChatReady(): boolean {
   return Boolean(chatView) && isUnlocked() && Boolean(getConfig())
 }
 
+/**
+ * 切语言后重刷本面板的文案。
+ *
+ * 面板的骨架只在挂载时写一次 `t()`，语言变了不会自己变——所以由 app 的
+ * `onLangChange` 调这里。两件事分开做：凭据区整块重画（它是短生命周期视图），
+ * 会话区只重套文案（流式中的回复节点不能被重画掉）。
+ *
+ * 表单态（`create` / `edit` …）不重画：重画会清空用户正填的输入，
+ * 让文案旧一会儿，比把半张表单抹掉要好。
+ */
+export function relabelAiPanel(): void {
+  if (!root) return
+  if (view.mode === 'list') draw()
+  chatView?.relabel()
+}
+
 /** 标题栏「新建会话」→ 会话区 */
 export function newAiSession(): void {
   chatView?.newSession()
@@ -144,6 +160,11 @@ export function newAiSession(): void {
 /** 标题栏「历史会话」→ 会话区浮层（把按钮当锚点传下去，浮层从它正下方开） */
 export function openAiHistory(anchor?: HTMLElement): void {
   chatView?.openHistory(anchor)
+}
+
+/** 标题栏「工作区」→ 工作区切换浮层（W-S4） */
+export function openAiWorkspaces(anchor?: HTMLElement): void {
+  chatView?.openWorkspaces(anchor)
 }
 
 async function reload(): Promise<void> {

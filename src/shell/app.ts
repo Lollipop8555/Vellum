@@ -27,7 +27,14 @@ import {
   type ChecksSettings,
   type Issue,
 } from '../diagnostics/types'
-import { isAiChatReady, newAiSession, openAiHistory, renderAiPanel } from '../ui/ai-panel'
+import {
+  isAiChatReady,
+  newAiSession,
+  openAiHistory,
+  openAiWorkspaces,
+  relabelAiPanel,
+  renderAiPanel,
+} from '../ui/ai-panel'
 import type { DocStat } from './ai/context'
 import type { DocHost } from './ai/tools'
 import { renderIssues, type IssuesPhase } from '../ui/issues'
@@ -52,7 +59,11 @@ import {
   normalizeEol,
 } from './codec'
 import { LIMITS, formatBytes, modeFor } from './largefile'
-import { pickFile, saveAs } from './save'
+import { downloadBlob, pickFile, saveAs } from './save'
+import { isPreviewableImage, mimeForName } from './asset'
+import { runScript as runInSandbox } from './ai/sandbox'
+import { addGrant, createWorkspace, removeGrant, workspaceById } from './ai/grants'
+import { clearWorkspace, sessionStatsByWorkspace, workspaceChatUsage, workspaceChatStats } from './ai/session'
 import {
   applyName,
   bumpContent,
@@ -123,6 +134,7 @@ import type {
   EngineId,
   FileMode,
   FileNode,
+  FolderNode,
   NodeRecord,
   OpenFile,
   SnapshotRecord,
@@ -255,23 +267,23 @@ const aiContent = createContent({
   titleKey: 'panel.ai',
   className: 'ai-body',
   rootId: 'aiBody',
-  // 会话按文件落库，所以要把「当前文件」递给面板；用 getter 而不是存快照，
-  // 流式期间用户切走文件时，面板读到的才是最新的那个 id
+  // 会话按**工作区**落库（v3 W-01），但「当前文件」仍要递给面板：读写票、选区、
+  // 光标都属于当前文件。用 getter 而不是存快照，流式期间切走文件时读到的是最新那个
   render: () =>
     renderAiPanel(aiContent.root, aiTarget, aiDocHost, () => refreshChrome('right')),
   // 新建 / 历史两颗按钮在**标题栏**（跟预览的打印、检查的筛选同一位置），
   // 不画在会话话题旁边 —— 那里是内容，不是面板 chrome
-  actions: ['aiNew', 'aiHistory'],
+  actions: ['aiWorkspace', 'aiNew', 'aiHistory'],
   // 没解锁时对话区根本不存在，两颗点了没反应的图标比没有更糟
   actionsVisible: () => isAiChatReady(),
 })
 
 /**
- * 会话挂在哪个文件名下。
+ * 面板眼里的「当前文件」。
  *
  * 副本上要**回指原文**：AI 第一次写就建副本并打开它，如果这里返回副本自己的 id，
- * 面板会立刻切到「副本的会话」（空的），用户看到的是「刚聊的内容凭空消失」。
- * 同一次会话的副本共用原文那条对话，切来切去都不掉。
+ * 文件票据（读写票、选区）就会指向副本，用户看到的选区与 AI 读到的内容对不上。
+ * 同一个工作区里切文件不换会话，所以这里只管文件通道，不再影响会话归属。
  */
 function aiTarget(): { id: string; name: string } | null {
   const file = state.current
@@ -352,11 +364,12 @@ async function aiDocWrite(next: string): Promise<void> {
 }
 
 /**
- * 给这次会话建一份 AI 副本并打开（§8 懒创建）。
+ * 给当前工作区建一份 AI 副本并打开（§8 懒创建）。
  *
- * 同一会话只建一份：连着两轮改不该每轮多一个文件。已有的副本直接打开。
+ * 同一工作区只建一份：连着两轮改不该每轮多一个文件。已有的副本直接打开。
+ * v3（W-03）起归属是工作区而不是会话：换会话继续改同一个文件，复用的是同一份副本。
  */
-async function aiDocCreateCopy(sessionId: string): Promise<{ id: string; name: string }> {
+async function aiDocCreateCopy(workspaceId: string): Promise<{ id: string; name: string }> {
   const source = state.current
   if (!source) throw new Error('no-file')
 
@@ -365,7 +378,7 @@ async function aiDocCreateCopy(sessionId: string): Promise<{ id: string; name: s
       node.kind === 'file' &&
       node.deletedAt === null &&
       node.id !== source.id &&
-      node.aiCopy?.sessionId === sessionId &&
+      node.aiCopy?.workspaceId === workspaceId &&
       node.aiCopy?.sourceId === source.id,
   )
   if (existing) {
@@ -391,7 +404,7 @@ async function aiDocCreateCopy(sessionId: string): Promise<{ id: string; name: s
     engine: state.engineId,
     size: encodeUtf8(text).byteLength,
   })
-  node.aiCopy = { sessionId, sourceId: source.id, createdAt: Date.now() }
+  node.aiCopy = { workspaceId, sourceId: source.id, createdAt: Date.now() }
 
   await store.putNode(node)
   await store.putContent({ id: node.id, blob: new Blob([text], { type: 'text/plain' }) })
@@ -408,6 +421,255 @@ const aiDocHost: DocHost = {
   rev: () => docRev,
   createCopy: aiDocCreateCopy,
   write: aiDocWrite,
+  workspace: (id) => aiWorkspaceView(id),
+  listWorkspaces: aiWorkspaceList,
+  createWorkspace: createAiWorkspace,
+  workspaceOf: aiWorkspaceOf,
+  readNodeText: aiReadNodeText,
+  revokeGrant: (refId, workspaceId) => revokeFromAi(refId, workspaceId),
+  grantRef: aiAutoReference,
+  copyNode: aiCopyNode,
+  readProjectFile: aiReadProjectFile,
+  writeNodeText: aiWriteNodeText,
+  createProjectNode: aiCreateProjectNode,
+  deleteProjectNode: aiDeleteProjectNode,
+  moveProjectNode: aiMoveProjectNode,
+  createProjectAsset: aiCreateProjectAsset,
+  writeNodeBytes: aiWriteNodeBytes,
+  runScript: aiRunScript,
+}
+
+/** grep 用：文本文件的规范 UTF-8 文本；二进制资产与无内容的节点返回 null */
+async function aiReadNodeText(id: string): Promise<string | null> {
+  const node = state.files.find((n) => n.id === id)
+  if (!node || node.kind !== 'file' || node.asset) return null
+  const content = await store.getContent(id)
+  const blob = await contentBlob(node, content)
+  return blob ? blob.text() : ''
+}
+
+/**
+ * cp：把源文本复制成目标文件夹下的新文件（只新建，源节点不动）。
+ * 同名自动 dedupe（a.txt -> a(1).txt）；新节点带 aiCopy 标记，记录来源工作区。
+ */
+async function aiCopyNode(
+  fromId: string,
+  toFolderId: string,
+  workspaceId: string,
+): Promise<{ id: string; name: string }> {
+  const source = state.files.find((n) => n.id === fromId)
+  if (!source || source.kind !== 'file') throw new Error('bad-source')
+  const text = (await aiReadNodeText(fromId)) ?? ''
+  const name = dedupeName(source.name, takenNames(state.files, toFolderId))
+  const node = createFileNode({
+    name,
+    parentId: toFolderId,
+    lang: source.lang,
+    langSource: source.langSource,
+    engine: source.engine,
+    size: encodeUtf8(text).byteLength,
+  })
+  node.aiCopy = { workspaceId, sourceId: source.id, createdAt: Date.now() }
+
+  await store.putNode(node)
+  await store.putContent({ id: node.id, blob: new Blob([text], { type: 'text/plain' }) })
+  await refreshFiles()
+  return { id: node.id, name: node.name }
+}
+
+/* ------------------------------------------------------- S4 项目读写（headless） */
+// 这些函数只做落库，不弹窗、不 toast、不碰「当前打开文件」的编辑器状态。
+// 权限（checkWrite）、读票、额度都由 tools.ts 判完才调到这里（L5 边界）。
+
+/** 按 id 读项目文本文件；rev 用节点 updatedAt（内容变更会 bump） */
+async function aiReadProjectFile(id: string): Promise<{ text: string; rev: number } | null> {
+  const node = state.files.find((n) => n.id === id)
+  if (!node || node.kind !== 'file' || node.asset) return null
+  const content = await store.getContent(id)
+  const blob = await contentBlob(node, content)
+  return { text: blob ? await blob.text() : '', rev: node.updatedAt }
+}
+
+/**
+ * 按 id 写项目文本。若该文件正好是当前打开的，走 aiDocWrite 以同步编辑器/草稿/诊断；
+ * 否则直接落 store 并刷新文件树。两种路径都 bump 节点 updatedAt 作为新 rev。
+ */
+async function aiWriteNodeText(id: string, text: string): Promise<{ lines: number; rev: number }> {
+  const node = state.files.find((n) => n.id === id)
+  if (!node || node.kind !== 'file') throw new Error('node-not-found')
+  const rev = Date.now()
+  const size = encodeUtf8(text).byteLength
+  await store.putNode(bumpContent(node as FileNode, size, rev))
+  await store.putContent({ id, blob: new Blob([text], { type: 'text/plain' }) })
+  if (state.current?.id === id) {
+    // 打开中的文件：让编辑器/预览/草稿跟上（aiDocWrite 内部会 setValue + persistDraft）
+    docRev += 1
+    if (state.editor) state.editor.setValue(text)
+    state.text = text
+    state.dirty = true
+    await persistDraft()
+  }
+  await refreshFiles()
+  return { lines: text.split('\n').length, rev }
+}
+
+/** 在 proj 文件夹下建节点；同名自动 dedupe。空文件不写 contents */
+async function aiCreateProjectNode(
+  parentId: string,
+  kind: 'file' | 'folder',
+  name: string,
+): Promise<{ id: string; name: string }> {
+  const taken = takenNames(state.files, parentId)
+  const finalName = taken.has(normalizeName(name)) ? dedupeName(name, taken) : name
+  const node =
+    kind === 'file'
+      ? createFileNode({
+          name: finalName,
+          parentId,
+          lang: langFromName(finalName),
+          langSource: 'ext',
+          engine: state.engineId,
+        })
+      : createFolderNode(finalName, parentId)
+  await store.putNode(node)
+  state.expanded.add(parentId)
+  saveExpanded()
+  await refreshFiles()
+  return { id: node.id, name: node.name }
+}
+
+/** 软删除 proj 内节点：只标顶层 deletedAt，不物理删（可恢复） */
+async function aiDeleteProjectNode(id: string): Promise<void> {
+  await trash.softDelete([id])
+  notifyFiles(id, true)
+  await refreshFiles()
+}
+
+/** 移动/改名 proj 内节点；非法移动抛错由 tools 层转成 tool_failed */
+async function aiMoveProjectNode(
+  id: string,
+  parentId: string,
+  name?: string,
+): Promise<{ name: string; parentId: string }> {
+  const node = state.files.find((n) => n.id === id)
+  if (!node) throw new Error('node-not-found')
+  const index = buildTree(state.files)
+  if (!canMoveInto(index, id, parentId)) throw new Error('illegal-move')
+  const taken = takenNames(state.files, parentId, id)
+  const desired = name ?? node.name
+  const finalName = taken.has(normalizeName(desired)) ? dedupeName(desired, taken) : desired
+  const next = applyName({ ...node, parentId }, finalName)
+  await store.putNode(next)
+  state.expanded.add(parentId)
+  saveExpanded()
+  await refreshFiles()
+  return { name: finalName, parentId }
+}
+
+/**
+ * 在 proj 文件夹下新建二进制资产（P-10：AI 用 base64 写出的图/包）。
+ * 只落 Blob + `asset` 标记，不进编辑器；父级不存在抛错由 tools 层转 tool_failed。
+ */
+async function aiCreateProjectAsset(
+  parentId: string,
+  name: string,
+  bytes: Uint8Array,
+  mime: string,
+): Promise<{ id: string; name: string; rev: number }> {
+  const parent = state.files.find((n) => n.id === parentId)
+  if (!parent || parent.kind !== 'folder' || parent.deletedAt !== null) throw new Error('bad-parent')
+  const taken = takenNames(state.files, parentId)
+  const finalName = taken.has(normalizeName(name)) ? dedupeName(name, taken) : name
+  const node = createFileNode({
+    name: finalName,
+    parentId,
+    lang: 'text',
+    langSource: 'ext',
+    engine: state.engineId,
+    size: bytes.byteLength,
+    asset: { mime },
+  })
+  await store.putNode(node)
+  await store.putContent({ id: node.id, blob: new Blob([bytes as unknown as BlobPart], { type: mime }) })
+  state.expanded.add(parentId)
+  saveExpanded()
+  await refreshFiles()
+  return { id: node.id, name: node.name, rev: node.updatedAt }
+}
+
+/** 覆盖已有二进制资产的内容；节点一旦失去 `asset` 标记就拒绝（避免把资产写成文本） */
+async function aiWriteNodeBytes(id: string, bytes: Uint8Array, mime: string): Promise<{ rev: number }> {
+  const node = state.files.find((n) => n.id === id)
+  if (!node || node.kind !== 'file' || !node.asset) throw new Error('not-asset')
+  const rev = Date.now()
+  const { sourceEncoding: _drop, ...rest } = node as FileNode
+  const next: FileNode = { ...rest, asset: { mime }, size: bytes.byteLength, updatedAt: rev }
+  await store.putNode(next)
+  await store.putContent({ id, blob: new Blob([bytes as unknown as BlobPart], { type: mime }) })
+  await refreshFiles()
+  return { rev }
+}
+
+/**
+ * 沙箱执行（S7）：联网开关每次现读设置，用户中途关掉也能立刻生效。
+ * `runInSandbox` 永不 reject，这里直接透传。
+ */
+function aiRunScript(lang: 'js' | 'py', code: string, timeoutMs?: unknown) {
+  return runInSandbox(lang, code, {
+    timeoutMs,
+    allowNetwork: getSettings().aiNetwork !== false,
+  })
+}
+
+/**
+ * 某个节点属于哪个工作区（沿祖先链找最近的 AI 工作区文件夹）；不在任何工作区里返回空串。
+ *
+ * 面板的「当前工作区」最后就回落到这里：文件在哪工作区里，打开它就默认聊那个（W-10）。
+ * 不能退回「库里的第一个工作区」—— 那只在「全库只有一个工作区」时才等价（W-S5 已清）。
+ */
+function aiWorkspaceOf(refId: string): string {
+  const byId = new Map(state.files.map((n) => [n.id, n] as const))
+  let node = byId.get(refId)
+  // 祖先链上限：脏数据里的环不能把这里挂死
+  for (let depth = 0; node && depth < 4096; depth += 1) {
+    if (node.kind === 'folder' && node.aiWorkspace) return node.aiWorkspace.id
+    node = node.parentId ? byId.get(node.parentId) : undefined
+  }
+  return ''
+}
+
+/**
+ * 面板此刻停在哪个工作区（W-S4：右键菜单写的是「当前 AI 工作区」，落点必须跟它一致）。
+ *
+ * 与 `chat.ts` 的 `currentWorkspaceId()` 同一条链：记住的那个 > 文件所属的。
+ * 用户选过就一定能对上；没选过时面板显示文件所属的那个，这里也取它。
+ */
+function aiActiveWorkspaceId(refId: string): string {
+  const saved = getSettings().aiLastWorkspace ?? ''
+  if (workspaceById(state.files, saved)) return saved
+  return aiWorkspaceOf(refId)
+}
+
+/**
+ * 「授权 / 取消授权」该落到哪个工作区：**当前激活的那个**。
+ *
+ * 不按「文件自己属于谁」去挑：激活 A 时右键一个 B 里的文件却写进 B，
+ * 结果与菜单文案、与用户此刻的上下文都对不上，纯属给人添迷惑。
+ * 当前工作区不存在（一个都没建）时，只有全库**唯一**一个工作区才能用它；
+ * 多工作区且没有激活的，宁可返回 `null` 让调用方提示先选（W-08）。
+ */
+function aiGrantTarget(refId: string): FolderNode | null {
+  const active = workspaceById(state.files, aiActiveWorkspaceId(refId))
+  if (active) return active
+  const list = aiWorkspaceList()
+  return list.length === 1 ? workspaceById(state.files, list[0].id) : null
+}
+
+/** 工作区视图：根 + 节点表。id 是 URI 前缀，查不到就 `null`（调用方报 not_project） */
+function aiWorkspaceView(id: string): { root: FolderNode; nodes: ReadonlyMap<string, NodeRecord> } | null {
+  const root = workspaceById(state.files, id)
+  if (!root) return null
+  return { root, nodes: new Map(state.files.map((n) => [n.id, n])) }
 }
 
 /* --------------------------------------------------------- 左侧抽屉内容 */
@@ -433,6 +695,7 @@ const filesContent = createContent({
       renamingId: state.renamingId,
       dirtyId: state.dirty && state.current ? state.current.id : null,
       selection: state.selection,
+      workspaceSessions: aiSessionCounts,
       handlers: {
         open: (id) => void openRecord(id),
         toggle: (id) => toggleFolder(id),
@@ -451,6 +714,9 @@ const filesContent = createContent({
         drop: (id, parentId) => void dropMove(id, parentId),
         openTab: (id) => void openFileInTab(id),
         elsewhere: (id) => probeOpenElsewhere(id),
+        grantAi: (id) => void grantToAi(id),
+        isGranted: (id) => !!aiGrantTarget(id)?.aiWorkspace?.grants.some((g) => g.refId === id),
+        revokeAi: (id) => void revokeFromAi(id),
       },
     }),
   syncChrome: syncFilesChrome,
@@ -605,6 +871,8 @@ export async function startApp() {
     updateDirtyDot()
     renderActivePanel()
     findBar?.relabel()
+    // AI 面板的骨架文案也是挂载时写死的，切语言要自己重套一遍
+    relabelAiPanel()
   })
 
   window.addEventListener('beforeunload', (e) => {
@@ -705,6 +973,7 @@ function wireRails() {
   el('previewClose').addEventListener('click', () => closePanel())
   // AI 标题栏：新建会话 / 历史会话。真正的状态在 ui/ai/chat.ts 里，
   // app 只做转发——面板不该反过来 import app（会成环）
+  el('aiWorkspace').addEventListener('click', () => openAiWorkspaces(el('aiWorkspace')))
   el('aiNew').addEventListener('click', () => newAiSession())
   el('aiHistory').addEventListener('click', () => openAiHistory(el('aiHistory')))
   el('previewPrint').addEventListener('click', () => {
@@ -740,6 +1009,7 @@ function syncFilesChrome() {
   el('batchBar').hidden = !batch
   el('importBtn').hidden = batch
   el('drawerStorage').hidden = false
+  el('storageDetail').hidden = !storageDetailOpen
   el('drawerFoot').hidden = false
   if (batch) el('batchCount').textContent = t('list.selectedCount', { n: state.selection.size })
 }
@@ -750,12 +1020,14 @@ function syncTrashChrome() {
   el<HTMLButtonElement>('emptyTrashBtn').disabled = !hasTrash
   // 空间条只属于文件页：回收站里没有「还占多少」这回事
   el('drawerStorage').hidden = true
+  el('storageDetail').hidden = true
   el('drawerFoot').hidden = false
 }
 
 /** 搜索页与快照页没有底部动作：列表自己就是全部内容 */
 function syncSearchChrome() {
   el('drawerStorage').hidden = true
+  el('storageDetail').hidden = true
   el('drawerFoot').hidden = true
 }
 
@@ -861,6 +1133,14 @@ function wireDrawer() {
   })
   el('restoreAllBtn').addEventListener('click', () => void restoreAllFromTrash())
   el('emptyTrashBtn').addEventListener('click', () => void emptyTrash())
+  // 底部空间条本身是按钮语义：点一下就地展开体积明细（W-11）
+  const storageBox = el('drawerStorage')
+  storageBox.addEventListener('click', () => void toggleStorageDetail())
+  storageBox.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    e.preventDefault()
+    void toggleStorageDetail()
+  })
 }
 
 /* ------------------------------------------------------------ 顶栏与空状态 */
@@ -1049,7 +1329,7 @@ async function refreshStorage() {
   const box = el('drawerStorage')
   el('drawerStorageText').textContent = text
   el('storageFill').style.width = `${pct.toFixed(2)}%`
-  box.title = t('list.storageHint', { usage: formatBytes(info.usage) })
+  box.title = `${t('list.storageHint', { usage: formatBytes(info.usage) })} · ${t('storage.detailHint')}`
   box.classList.toggle('is-warn', info.quota > 0 && total > info.quota * 0.8)
 
   // 图标栏那个环：2πr（r = 15）= 94.25
@@ -1059,6 +1339,212 @@ async function refreshStorage() {
   const disk = el('railDisk')
   disk.classList.toggle('is-warn', ratio > 0.8)
   disk.title = text
+
+  // 明细开着的时候跟着重算：删了文件/清了回收站，数字得跟着变（W-11）
+  if (storageDetailOpen) void renderStorageDetail()
+}
+
+/* --------------------------------------------------------- 体积明细（W-11） */
+
+/**
+ * 明细是否展开。它只属于文件页：切到回收站/搜索页时不销毁状态，
+ * 只是把内容藏起来，回到文件页再原样展开（少一次重算）。
+ */
+let storageDetailOpen = false
+/** 计算代次：收起、重算、切页时自增；过期的异步结果不许再往 DOM 上写 */
+let storageCalcGen = 0
+
+interface WorkspaceUsage {
+  id: string
+  nodeId: string
+  name: string
+  files: number
+  sessions: number
+  messages: number
+  bytes: number
+}
+
+/**
+ * 每个工作区的文件体积：整棵树走一遍，文件算给**最近的**工作区祖先。
+ *
+ * 不能按「子树求和」：工作区可以嵌套（用户把它拖进另一个工作区），那样父子重复计数，
+ * 各工作区之和会超过「文件」那一行。
+ */
+function workspaceFileBytes(): Map<string, number> {
+  const children = new Map<string | null, NodeRecord[]>()
+  for (const node of state.files) {
+    const bucket = children.get(node.parentId)
+    if (bucket) bucket.push(node)
+    else children.set(node.parentId, [node])
+  }
+  const out = new Map<string, number>()
+  const walk = (parentId: string | null, workspaceId: string) => {
+    for (const node of children.get(parentId) ?? []) {
+      // 软删的整棵子树都带 deletedAt，不必也不该往下走
+      if (node.deletedAt !== null) continue
+      const next = node.kind === 'folder' && node.aiWorkspace ? node.aiWorkspace.id : workspaceId
+      if (node.kind === 'file') {
+        if (next) out.set(next, (out.get(next) ?? 0) + node.size)
+      } else {
+        walk(node.id, next)
+      }
+    }
+  }
+  walk(null, '')
+  return out
+}
+
+function detailRow(label: string): { row: HTMLElement; value: HTMLElement } {
+  const row = document.createElement('div')
+  row.className = 'storage-line'
+  const name = document.createElement('span')
+  name.className = 'storage-name'
+  name.textContent = label
+  const value = document.createElement('span')
+  value.className = 'storage-val'
+  row.append(name, value)
+  return { row, value }
+}
+
+/** 超 50 MB 的单项单独标红：混在一堆数字里看不出哪个才是罪魁 */
+const STORAGE_BIG = 50 * 1024 * 1024
+
+async function renderStorageDetail(): Promise<void> {
+  const host = el('storageDetail')
+  const gen = ++storageCalcGen
+  if (!storageDetailOpen) {
+    host.hidden = true
+    host.textContent = ''
+    return
+  }
+  host.hidden = false
+  host.textContent = ''
+
+  const files = detailRow(t('storage.files'))
+  host.append(files.row)
+
+  const wsHead = detailRow(t('storage.workspaces'))
+  host.append(wsHead.row)
+  const wsHost = document.createElement('div')
+  wsHost.className = 'storage-ws-list'
+  host.append(wsHost)
+
+  const trashRow = detailRow(t('storage.trash'))
+  const emptyTrashBtn = document.createElement('button')
+  emptyTrashBtn.type = 'button'
+  emptyTrashBtn.className = 'btn btn-ghost storage-act'
+  emptyTrashBtn.textContent = t('storage.emptyTrash')
+  emptyTrashBtn.disabled = true
+  emptyTrashBtn.addEventListener('click', () => {
+    void emptyTrash().then(() => renderStorageDetail())
+  })
+  trashRow.row.append(emptyTrashBtn)
+  host.append(trashRow.row)
+
+  files.value.textContent = t('storage.calc')
+  wsHead.value.textContent = t('storage.calc')
+  trashRow.value.textContent = t('storage.calc')
+
+  const [fileBytes, trashBytes] = await Promise.all([store.totalSize(), store.trashSize()])
+  if (gen !== storageCalcGen) return
+  files.value.textContent = formatBytes(fileBytes)
+  files.value.classList.toggle('is-big', fileBytes > STORAGE_BIG)
+  trashRow.value.textContent = formatBytes(trashBytes)
+  trashRow.value.classList.toggle('is-big', trashBytes > STORAGE_BIG)
+  emptyTrashBtn.disabled = trashBytes === 0
+
+  const list = aiWorkspaceList()
+  if (!list.length) {
+    const empty = document.createElement('div')
+    empty.className = 'storage-empty'
+    empty.textContent = t('storage.empty')
+    wsHost.append(empty)
+    wsHead.value.textContent = '—'
+    return
+  }
+
+  const bytesByWs = workspaceFileBytes()
+  let wsTotal = 0
+  for (const brief of list) {
+    const filesBytes = bytesByWs.get(brief.id) ?? 0
+    const box = document.createElement('div')
+    box.className = 'storage-ws'
+
+    const line = detailRow(brief.name)
+    line.value.textContent = t('storage.calc')
+    const sub = document.createElement('div')
+    sub.className = 'storage-sub'
+    sub.textContent = t('storage.calc')
+    box.append(line.row, sub)
+    wsHost.append(box)
+
+    // 逐个算、逐个 await：每个工作区之间让出一次主线程，大库不会卡成一帧
+    const usage = await workspaceChatUsage(brief.id)
+    if (gen !== storageCalcGen || !box.isConnected) return
+    const item: WorkspaceUsage = {
+      id: brief.id,
+      nodeId: brief.nodeId,
+      name: brief.name,
+      files: filesBytes,
+      sessions: usage.sessions,
+      messages: usage.messages,
+      bytes: usage.bytes,
+    }
+    wsTotal += filesBytes + usage.bytes
+    line.value.textContent = formatBytes(filesBytes + usage.bytes)
+    line.value.classList.toggle('is-big', filesBytes + usage.bytes > STORAGE_BIG)
+    sub.textContent = t('storage.wsDetail', {
+      files: formatBytes(filesBytes),
+      n: usage.sessions,
+      chat: formatBytes(usage.bytes),
+    })
+
+    const acts = document.createElement('div')
+    acts.className = 'storage-acts'
+    const clear = document.createElement('button')
+    clear.type = 'button'
+    clear.className = 'btn btn-ghost storage-act'
+    clear.textContent = t('storage.clearChat')
+    clear.disabled = usage.sessions === 0
+    clear.addEventListener('click', () => void clearWorkspaceChats(item))
+    const del = document.createElement('button')
+    del.type = 'button'
+    del.className = 'btn btn-ghost storage-act is-danger'
+    del.textContent = t('ai.ws.delete')
+    del.addEventListener('click', () => void trashNode(item.nodeId).then(() => renderStorageDetail()))
+    acts.append(clear, del)
+    box.append(acts)
+  }
+  if (gen !== storageCalcGen) return
+  wsHead.value.textContent = formatBytes(wsTotal)
+  wsHead.value.classList.toggle('is-big', wsTotal > STORAGE_BIG)
+}
+
+/** 清理某个工作区的全部会话：文件不动，会话不可恢复，所以文案要写明「无法恢复」 */
+async function clearWorkspaceChats(item: WorkspaceUsage): Promise<void> {
+  const res = await confirmDialog(
+    t('storage.clearChatTitle'),
+    t('storage.clearChatBody', {
+      name: item.name,
+      sessions: item.sessions,
+      messages: item.messages,
+    }),
+  )
+  if (!res.ok) return
+  const n = await clearWorkspace(item.id)
+  toast(t('storage.cleared', { n }))
+  // 面板可能正停在被清空的工作区上：重画一次才会回到空态，而不是留着一条已经不存在的会话
+  renderRightContent()
+  await renderStorageDetail()
+}
+
+/** 点底部空间条就地展开/收起明细；不弹窗（§8.6） */
+async function toggleStorageDetail(): Promise<void> {
+  storageDetailOpen = !storageDetailOpen
+  const box = el('drawerStorage')
+  box.classList.toggle('is-open', storageDetailOpen)
+  box.setAttribute('aria-expanded', String(storageDetailOpen))
+  await renderStorageDetail()
 }
 
 /**
@@ -1132,6 +1618,37 @@ function autoLang(name: string, text: string): { lang: LangId; source: FileNode[
 /** 超过这个体积就不再留原始字节，避免同一份内容占两倍配额（D-16） */
 const KEEP_ORIGINAL_LIMIT = 5 * 1024 * 1024
 
+/**
+ * 二进制导入（P-08）：存 Blob、节点标 `asset`，不进入编辑器。
+ * 图片可预览，其余只给元信息（P-09）；移动/重命名与文本节点同一套逻辑。
+ */
+async function ingestAsset(file: File, buf: ArrayBuffer) {
+  const mime = mimeForName(file.name, file.type)
+  const name = dedupeName(file.name || t('misc.untitled'), takenNames(state.files, null))
+  const node = createFileNode({
+    name,
+    lang: 'text',
+    langSource: 'ext',
+    engine: state.engineId,
+    size: buf.byteLength,
+    asset: { mime },
+  })
+
+  try {
+    await store.putNode(node)
+    await store.putContent({ id: node.id, blob: new Blob([buf], { type: mime }) })
+  } catch (err) {
+    toast(t('toast.cacheFailed', { msg: (err as Error).message }), 'error')
+    return
+  }
+
+  await refreshFiles()
+  await refreshStorage()
+  await openRecord(node.id)
+  notifyFiles(node.id)
+  toast(t('toast.imported', { name: node.name }))
+}
+
 async function ingestFile(file: File) {
   // 不设硬上限：超大文件只提醒一次，用户确认后照常打开（只读）
   if (file.size > LIMITS.warn) {
@@ -1144,7 +1661,7 @@ async function ingestFile(file: File) {
 
   const buf = await file.arrayBuffer()
   if (looksBinary(buf)) {
-    toast(t('toast.binary'), 'error')
+    await ingestAsset(file, buf)
     return
   }
 
@@ -1299,6 +1816,63 @@ async function openFileInTab(id: string) {
   window.open(fileUrl(id), '_blank')
 }
 
+/* ------------------------------------------------------------ 二进制预览 */
+
+/** 当前预览图的对象 URL；换文件/关文件时必须释放，否则 Blob 一直被引用（P-09） */
+let assetUrl: string | null = null
+
+function releaseAssetUrl() {
+  if (!assetUrl) return
+  URL.revokeObjectURL(assetUrl)
+  assetUrl = null
+}
+
+/**
+ * 渲染二进制资产的预览视图：图片内联显示，其余（aar/so/zip 等）只给元信息。
+ * 不创建编辑器实例 —— 资产不参与文本编辑（P-09）。
+ */
+function mountAssetView(node: FileNode, blob: Blob | null) {
+  const host = el('editorHost')
+  releaseAssetUrl()
+  findBar?.close()
+  state.editor?.destroy()
+  state.editor = null
+  host.innerHTML = ''
+
+  const mime = node.asset?.mime ?? 'application/octet-stream'
+  const card = document.createElement('div')
+  card.className = 'asset-view'
+
+  if (blob && isPreviewableImage(mime)) {
+    assetUrl = URL.createObjectURL(blob)
+    const img = document.createElement('img')
+    img.className = 'asset-image'
+    img.src = assetUrl
+    img.alt = node.name
+    card.appendChild(img)
+  } else {
+    const note = document.createElement('div')
+    note.className = 'asset-note'
+    note.textContent = t('asset.noPreview')
+    card.appendChild(note)
+  }
+
+  const meta = document.createElement('div')
+  meta.className = 'asset-meta'
+  meta.textContent = t('asset.meta', { mime, size: formatBytes(node.size) })
+  card.appendChild(meta)
+
+  const dl = document.createElement('button')
+  dl.className = 'btn btn-ghost'
+  dl.textContent = t('action.download')
+  dl.onclick = () => {
+    if (blob) downloadBlob(node.name, blob)
+  }
+  card.appendChild(dl)
+
+  host.appendChild(card)
+}
+
 /** line 只用于搜索命中跳转：打开后把光标带到那一行 */
 async function openRecord(id: string, line?: number) {
   const node = await store.getNode(id)
@@ -1317,6 +1891,28 @@ async function openRecord(id: string, line?: number) {
   const content = await store.getContent(id)
   const free = await lock.claim(id)
   const rec = toOpen(node, content, { locked: !free, mode: modeFor(node.size) })
+
+  // 二进制资产（P-08）：不进编辑器，直接预览。锁照拿，避免两个标签页同时覆盖
+  if (node.asset) {
+    state.current = rec
+    state.locked = !free
+    if (!free) toast(t('toast.locked'), 'error')
+    state.text = ''
+    state.dirty = false
+    state.rawBytes = null
+    state.mode = modeFor(node.size)
+    mountAssetView(node, content?.blob ?? content?.originalBytes ?? null)
+    rememberTabFile(id)
+    syncHash(id)
+    el('emptyState').hidden = true
+    await refreshSnapshots()
+    await refreshFiles()
+    refreshMeta()
+    updateFormatButton()
+    renderLeftContent()
+    return
+  }
+
   rec.blob = await contentBlob(node, content)
 
   state.current = rec
@@ -1350,6 +1946,7 @@ async function openRecord(id: string, line?: number) {
 function closeCurrent() {
   state.editor?.destroy()
   state.editor = null
+  releaseAssetUrl()
   state.current = null
   state.text = ''
   state.dirty = false
@@ -1408,6 +2005,7 @@ async function mountEditor(text: string, offset = 0) {
   findBar?.close()
   state.editor?.destroy()
   state.editor = null
+  releaseAssetUrl()
   host.innerHTML = ''
 
   // Monaco 是按需下载的：断网且离线包还没下到它时，import() 会失败。
@@ -2455,12 +3053,49 @@ async function refreshFiles() {
   // 快照页看的是历史不是文件，不用跟着重建
   if (!snapshotsContent.isVisible()) renderLeftContent()
   refreshChrome('left')
+  // 会话数只进徽标 tooltip：异步补，不拖慢文件树的这一帧
+  void refreshAiSessionCounts()
+}
+
+/** 每个工作区的会话数（W-S4 徽标 tooltip），变了才重画左栏 */
+let aiSessionCounts: ReadonlyMap<string, number> = new Map()
+
+async function refreshAiSessionCounts(): Promise<void> {
+  let next: ReadonlyMap<string, number>
+  try {
+    const stats = await sessionStatsByWorkspace()
+    next = new Map([...stats].map(([id, item]) => [id, item.count] as const))
+  } catch {
+    return
+  }
+  // 没变就别重画：`refreshFiles` 会被 AI 的每次写入触发，白重画会让左栏一直闪
+  if (next.size === aiSessionCounts.size) {
+    let same = true
+    for (const [key, value] of next) {
+      if (aiSessionCounts.get(key) !== value) {
+        same = false
+        break
+      }
+    }
+    if (same) return
+  }
+  aiSessionCounts = next
+  if (filesContent.isVisible()) filesContent.render()
 }
 
 /** 重画左侧当前内容；要更新别的分区请直接调那个内容的 render */
 function renderLeftContent() {
   const id = activeContentId('left')
   syncRailCounts()
+  void (id ? contentById(id) : null)?.render()
+}
+
+/**
+ * 重画右侧当前内容。工作区被删/被清空后要调一次：会话区还挂着已删工作区的记录，
+ * 不重画就会停在一条「查不到工作区」的旧会话上（chat 的 align 会自己回落到列表）。
+ */
+function renderRightContent() {
+  const id = activeContentId('right')
   void (id ? contentById(id) : null)?.render()
 }
 
@@ -2877,15 +3512,155 @@ function moveDialog(id: string): void {
   }
 }
 
+/**
+ * 授权给**当前 AI 工作区**：把节点加进它的引用列表（`:link`）。
+ *
+ * 菜单文案与落点由同一个 `aiGrantTarget` 决定，所以点下去加进的一定是
+ * 面板此刻停着的那个工作区（激活 A 却写进 B 的情况不存在）。
+ * v3（W-08）：普通文件夹不再自动升为工作区 —— 工作区必须由用户显式建立。
+ * 没有工作区时只提示，不改动文件树：悄悄改用户的目录结构比报错更糟。
+ */
+async function grantToAi(id: string): Promise<void> {
+  const target = state.files.find((n) => n.id === id)
+  if (!target) return
+  // 加进哪个工作区见 `aiGrantTarget`：多工作区下猜不了就提示用户去面板里选
+  const root = aiGrantTarget(id)
+  if (!root) {
+    toast(
+      t(
+        aiWorkspaceList().length
+          ? 'ai.grant.err.pick_workspace'
+          : 'ai.grant.err.no_workspace',
+      ),
+    )
+    return
+  }
+  const nodes = new Map(state.files.map((n) => [n.id, n] as const))
+  const res = addGrant(root, id, nodes, Date.now())
+  if (!res.ok) {
+    const reason =
+      res.error === 'not_found'
+        ? t('ai.grant.err.not_found')
+        : res.error === 'in_workspace'
+          ? t('ai.grant.err.in_workspace')
+          : t('ai.grant.err.already_granted')
+    toast(reason)
+    return
+  }
+  await store.putNode(res.root)
+  await refreshFiles()
+  toast(t('ai.grant.added', { name: target.name, ws: root.name }))
+}
+
+/**
+ * 取消授权。`workspaceId` 由面板显式给出（它就是列清单的那个工作区）；
+ * 树右键不带，走 `aiGrantTarget` —— 两边都不再靠 refId 反推工作区，
+ * 否则面板里跨工作区引用的一行点了会没反应（写进的是文件老家那份）。
+ */
+async function revokeFromAi(id: string, workspaceId?: string): Promise<void> {
+  const root = workspaceId ? workspaceById(state.files, workspaceId) : aiGrantTarget(id)
+  if (!root) return
+  const res = removeGrant(root, id)
+  if (!res.ok) return
+  const name = state.files.find((n) => n.id === id)?.name ?? ''
+  await store.putNode(res.root)
+  await refreshFiles()
+  toast(t('ai.grant.removed', { name, ws: root.name }))
+}
+
+/**
+ * 发消息时的自动引用（W-04）：把当前文件加进**指定工作区**的 `:link`。
+ *
+ * 去重由调用方（chat.ts）先判 inSubtree / isGrantedBy 做完，这里只在真新增时落库。
+ * 返回 `true` 表示确实加进去了 —— chat 据此决定要不要回一条事件消息。
+ * 工作区不存在就安静地返回 `false`：发消息本身不该因为没工作区就失败。
+ */
+async function aiAutoReference(refId: string, workspaceId: string): Promise<boolean> {
+  const root = workspaceById(state.files, workspaceId)
+  if (!root) return false
+  const nodes = new Map(state.files.map((n) => [n.id, n] as const))
+  const res = addGrant(root, refId, nodes, Date.now())
+  if (!res.ok) return false
+  await store.putNode(res.root)
+  await refreshFiles()
+  return true
+}
+
+/** 工作区摘要：面板列表 / 切换浮层 / 标题栏都要，形状固定成一份，别让 UI 各自去翻节点 */
+export interface AiWorkspaceBrief {
+  id: string
+  /** 文件夹名，可被用户改名 */
+  name: string
+  /** 文件夹节点 id（树徽标、删除工作区都用它） */
+  nodeId: string
+  /** 授权引用 id 列表：切换浮层据此判断「引用过当前文件」 */
+  grantIds: string[]
+  createdAt: number
+}
+
+function aiWorkspaceList(): AiWorkspaceBrief[] {
+  const out: AiWorkspaceBrief[] = []
+  for (const node of state.files) {
+    const workspace = node.kind === 'folder' ? node.aiWorkspace : undefined
+    if (!workspace || node.deletedAt !== null) continue
+    out.push({
+      id: workspace.id,
+      name: node.name,
+      nodeId: node.id,
+      grantIds: workspace.grants.map((grant) => grant.refId),
+      createdAt: workspace.createdAt,
+    })
+  }
+  return out.sort((a, b) => a.createdAt - b.createdAt)
+}
+
+/**
+ * 「新工作区」（W-08）：**只在用户点的时候**建文件夹，名字取现有最大序号 + 1。
+ *
+ * 默认名字允许改名（树里双击即可）。建完自动展开父级并选中，用户马上能看到它在哪。
+ */
+async function createAiWorkspace(name?: string): Promise<AiWorkspaceBrief | null> {
+  const siblings = state.files.filter((n) => n.parentId === null && n.kind === 'folder')
+  let label = name?.trim() ?? ''
+  if (!label) {
+    // 序号按「AI 工作区-N」里出现过的最大值 +1：删掉中间某个也不会撞名
+    let max = 0
+    for (const node of siblings) {
+      const hit = /^AI 工作区-(\d+)$/.exec(node.name)
+      if (hit) max = Math.max(max, Number(hit[1]))
+    }
+    label = `AI 工作区-${max + 1}`
+  }
+  while (siblings.some((n) => n.name === label)) label = `${label} 2`
+
+  // 不走 `createNode`：那个入口会弹输入框让人先想名字，而这里默认名已经定了，
+  // 想改名去树里双击（W-08 允许改名）
+  const marked = createWorkspace(createFolderNode(label, null), Date.now())
+  await store.putNode(marked)
+  await refreshFiles()
+  toast(t('ai.ws.created', { name: marked.name }))
+  return {
+    id: marked.aiWorkspace?.id ?? '',
+    name: marked.name,
+    nodeId: marked.id,
+    grantIds: [],
+    createdAt: marked.aiWorkspace?.createdAt ?? Date.now(),
+  }
+}
+
 async function trashNode(id: string): Promise<void> {
   const node = state.files.find((n) => n.id === id)
   if (!node) return
 
+  const workspace = node.kind === 'folder' ? node.aiWorkspace : undefined
   const res = await confirmDialog(
     t('confirm.trashTitle'),
-    node.kind === 'folder'
-      ? t('confirm.trashFolderBody', { name: node.name })
-      : t('confirm.trashBody', { name: node.name }),
+    // 工作区软删只说「会话保留」：真正的清理在回收站彻底删除那一步（W-09）
+    workspace
+      ? t('ai.ws.trashBody', { name: node.name })
+      : node.kind === 'folder'
+        ? t('confirm.trashFolderBody', { name: node.name })
+        : t('confirm.trashBody', { name: node.name }),
   )
   if (!res.ok) return
 
@@ -2894,6 +3669,8 @@ async function trashNode(id: string): Promise<void> {
   notifyFiles(id, true)
   if (state.current?.id === id) closeCurrent()
   await refreshFiles()
+  // 删掉的是工作区：右侧会话区还挂着它的历史，必须重画回落到列表（§8.9「不得白屏」）
+  if (workspace) renderRightContent()
   toast(t('toast.trashed', { name: node.name }))
 }
 
@@ -2939,15 +3716,26 @@ async function forgetDeleted(ids: string[]): Promise<void> {
 async function purgeFromTrash(id: string): Promise<void> {
   const node = state.files.find((n) => n.id === id)
   if (!node) return
+  const workspace = node.kind === 'folder' ? node.aiWorkspace : undefined
+  // 工作区硬删要连会话一起清（W-09）：先把会丢掉多少写进确认框，软删时不提这一句
+  const stats = workspace ? await workspaceChatStats(workspace.id) : null
   const res = await confirmDialog(
-    t('confirm.purgeTitle'),
-    t('confirm.purgeBody', { name: node.name }),
+    t(workspace ? 'ai.ws.purgeTitle' : 'confirm.purgeTitle'),
+    workspace && stats
+      ? t('ai.ws.purgeBody', {
+          name: node.name,
+          sessions: stats.sessions,
+          messages: stats.messages,
+        })
+      : t('confirm.purgeBody', { name: node.name }),
   )
   if (!res.ok) return
 
   const gone = await trash.purge([id])
+  if (workspace) await clearWorkspace(workspace.id)
   await forgetDeleted(gone)
   await refreshFiles()
+  if (workspace) renderRightContent()
   toast(t('toast.purged', { n: gone.length }))
 }
 
@@ -2956,9 +3744,21 @@ async function emptyTrash(): Promise<void> {
   const res = await confirmDialog(t('confirm.emptyTrashTitle'), t('confirm.emptyTrashBody'))
   if (!res.ok) return
 
+  // 先把回收站里的工作区记下来：清空之后节点就查不到了，会话却得跟着一起清（W-09）
+  const doomed: Array<{ nodeId: string; workspaceId: string }> = []
+  for (const node of state.files) {
+    if (node.deletedAt === null || node.kind !== 'folder' || !node.aiWorkspace) continue
+    doomed.push({ nodeId: node.id, workspaceId: node.aiWorkspace.id })
+  }
+
   const gone = await trash.emptyTrash()
+  const stillGone = new Set(gone)
+  for (const item of doomed) {
+    if (stillGone.has(item.nodeId)) await clearWorkspace(item.workspaceId)
+  }
   await forgetDeleted(gone)
   await refreshFiles()
+  if (doomed.length) renderRightContent()
   if (gone.length) toast(t('toast.trashEmptied'))
 }
 

@@ -20,7 +20,7 @@
  * ```
  *
  * 每一段都落库、都成对：`assistant(tool_calls)` 后面必定紧跟它的 `tool` 结果（INV-6）。
- * 循环上限 20 轮、每轮最多 6 次写入；用尽**不静默截断**，而是说清楚为什么停、怎么继续。
+ * 循环上限 60 轮、每轮最多 20 次写入；用尽**不静默截断**，而是说清楚为什么停、怎么继续。
  */
 
 import { getLang, t, type MessageKey } from '../../i18n'
@@ -32,21 +32,27 @@ import {
   getSession,
   listSessions,
   loadMessages,
+  sessionStatsByWorkspace,
   type ChatMessage,
   type ChatSession,
 } from '../../shell/ai/session'
 import {
   BUDGET_TOKENS,
+  EVENT_PREFIX,
   locator,
   nonce,
+  sanitizeWire,
   systemPrompt,
   trimHistory,
 } from '../../shell/ai/context'
+import { inSubtree, isGrantedBy } from '../../shell/ai/project'
 import {
   createToolbox,
+  MAX_WRITE_LIMIT,
   toolSchemas,
   type DocHost,
   type Toolbox,
+  type ToolEvent,
   type ToolQuota,
   type ToolResult,
 } from '../../shell/ai/tools'
@@ -66,6 +72,7 @@ import {
   type ProfileRecord,
 } from '../../shell/ai/vault'
 import { getSettings, updateSettings } from '../../shell/settings'
+import { toast } from '../toast'
 import { confirmDialog, openDialog } from '../dialogs'
 import { renderMarkdown } from '../markdown'
 import { createStreamBody, hydrateDiagrams, type StreamBody } from './md-stream'
@@ -93,6 +100,11 @@ export interface ChatView {
    * 浮层要从**按钮正下方**拉出来，而不是从会话话题那一行冒出来。
    */
   openHistory(anchor?: HTMLElement): void
+  /**
+   * 打开工作区切换浮层（W-S4）。入口是面板标题栏的 `#aiWorkspace`，
+   * 同样把按钮当锚点传进来 —— 浮层要贴着它往下拉。
+   */
+  openWorkspaces(anchor?: HTMLElement): void
 }
 
 export interface ChatOptions {
@@ -111,13 +123,24 @@ export interface ChatOptions {
 }
 
 /** 缺省参数：设置里没存过就用这个，不主动写进 localStorage（见 types.ts 的注释） */
-const AI_DEFAULTS = { maxTokens: 1024, temperature: 0.7 }
+/**
+ * 默认输出上限。1024 连一个几百行的文件都装不下：`write_file` 的 arguments 会被
+ * 拦腰截断，落到工具层就是「参数不是合法 JSON」—— 模型无从知道是被截断，只能反复重试。
+ * 8192 能覆盖「一次写一个中等文件」，更大的文件靠 read_file + apply_edits 分批。
+ */
+const AI_DEFAULTS = { maxTokens: 8192, temperature: 0.7 }
 /** 首屏最多画这么多条：更早的只给一行「已省略」，不做分页 */
 const MAX_RENDERED = 200
-/** 一次用户发言内最多几轮工具循环（§7）。到顶就停并让用户说「继续」 */
-const MAX_ROUNDS = 20
-/** 每轮用户发言内最多写几次文档（§7） */
-const MAX_WRITES = 6
+/**
+ * 一次用户发言内最多几轮工具循环（§7）。到顶就停并让用户说「继续」。
+ *
+ * 20 轮听着很多，实际一轮只干一件事：read → 改 → 跑一下验证 → 再修一处。
+ * 写个小单元测试就要 8-10 轮，20 轮在第 3 个文件就见底，用户体感是
+ * 「话没说完就被掐断」。放到 60：够收尾，也还留着兜底不至于无限跑。
+ */
+const MAX_ROUNDS = 60
+/** 每轮用户发言内最多写几次文档（§7）—— 与工具层同一个来源，回给模型的 limit 才对得上 */
+const MAX_WRITES = MAX_WRITE_LIMIT
 /** 粘底阈值：离底 48px 以内算「还在看最新一条」 */
 const STICK_SLOP = 48
 /**
@@ -131,6 +154,29 @@ const ICON_SEND = `<svg viewBox="0 0 20 20" aria-hidden="true">
 </svg>`
 const ICON_STOP = `<svg viewBox="0 0 20 20" aria-hidden="true">
   <rect x="6.4" y="6.4" width="7.2" height="7.2" rx="1.4" fill="currentColor"/>
+</svg>`
+/** 授权入口的文件夹图标，同样是 1.6 线宽的描边风格 */
+const ICON_FOLDER = `<svg viewBox="0 0 20 20" aria-hidden="true">
+  <path d="M3.4 6.2a1.4 1.4 0 0 1 1.4-1.4h2.6l1.5 1.6h6.3a1.4 1.4 0 0 1 1.4 1.4v6.4a1.4 1.4 0 0 1-1.4 1.4H4.8a1.4 1.4 0 0 1-1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+</svg>`
+/**
+ * 联网开关：地球 + 经线。用图标而不是「联网 开」两个字——
+ * 状态栏本来就窄，文字 chip 会把「方案 · 模型」挤没；点亮/变灰本身就能读出状态。
+ */
+const ICON_NETWORK = `<svg viewBox="0 0 20 20" aria-hidden="true">
+  <circle cx="10" cy="10" r="6.6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M3.4 10h13.2" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <path d="M10 3.4c1.9 1.9 2.9 4.1 2.9 6.6S11.9 14.7 10 16.6C8.1 14.7 7.1 12.5 7.1 10S8.1 5.3 10 3.4z" fill="none" stroke="currentColor" stroke-width="1.5"/>
+</svg>`
+/** 脚本开关：尖括号 + 斜杠 */
+const ICON_SCRIPT = `<svg viewBox="0 0 20 20" aria-hidden="true">
+  <path d="M7.2 5.6 3.4 10l3.8 4.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M12.8 5.6 16.6 10l-3.8 4.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M11.4 4.4 8.6 15.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+</svg>`
+/** 取消授权：叉号。与标题栏、浮层里那套 1.6 线宽同规格 */
+const ICON_CLOSE = `<svg viewBox="0 0 20 20" aria-hidden="true">
+  <path d="M5.8 5.8 14.2 14.2M14.2 5.8 5.8 14.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
 </svg>`
 
 interface Ui {
@@ -148,6 +194,11 @@ interface Ui {
   /** 发送键二选一：回车 / ⌘+回车 */
   keyEnter: HTMLButtonElement
   keyMod: HTMLButtonElement
+  /** 状态栏左侧的文件夹图标：点开管理 AI 授权列表（S3） */
+  grants: HTMLButtonElement
+  /** 联网 / 脚本状态 chip（P-11）：常驻可见，点一下切换 */
+  netChip: HTMLButtonElement
+  scriptChip: HTMLButtonElement
   /** 同时只允许开一个浮层；`null` 表示都关着 */
   pop: HTMLElement | null
   /** 关浮层时要顺手摘掉的 document 监听 */
@@ -155,7 +206,7 @@ interface Ui {
 }
 
 interface Shown {
-  fileId: string | null
+  workspaceId: string
   session: ChatSession | null
   messages: ChatMessage[]
   /** 因为超过 `MAX_RENDERED` 而没画出来的条数 */
@@ -165,8 +216,8 @@ interface Shown {
 /** 一次在途请求。DOM 与库两边都要收尾，所以把两者都挂在这里 */
 interface Run {
   sessionId: string
-  /** 这一轮是给哪个文件发的：收尾时据此判断用户有没有切走 */
-  fileId: string | null
+  /** 这一轮是给哪个工作区发的：收尾时据此判断用户有没有切走 */
+  workspaceId: string
   abort: AbortController
   /** 当前这一轮的正文容器（每轮新开一个 turn 节点） */
   turn: HTMLElement | null
@@ -198,8 +249,38 @@ let sending = false
  * 刷新或切回面板就会把「新建的空会话」又换回最近一条旧会话。
  */
 let activeId: string | null | undefined = undefined
-/** `activeId` 是给哪个文件选的：换文件必须丢弃（否则会拿 A 的会话去显示 B） */
-let activeFile: string | null = null
+/** `activeId` 是给哪个工作区选的：换工作区必须丢弃（否则会拿 A 的会话去显示 B） */
+let activeWorkspace = ''
+
+/** 本次打开面板后用户主动选过的工作区（切换浮层 / 列表）；切回别的就丢（W-S4） */
+let pickedWorkspace: string | undefined
+
+/**
+ * 当前工作区 id；库里一个工作区都没有时为空串（面板此时显示工作区列表）。
+ *
+ * 优先级：本次选中的 > 上次记住的（`settings.aiLastWorkspace`）> 当前文件所属的。
+ * 前两个都要先确认**还在**：工作区被删掉后不能拿一个死 id 去查会话（W-10）。
+ *
+ * 会话归属工作区、不跟随文件（W-01）：在同一个工作区里切文件不换会话。
+ */
+function currentWorkspaceId(): string {
+  const list = opts?.docHost?.listWorkspaces?.() ?? []
+  const alive = (id: string | undefined): string =>
+    id && list.some((workspace) => workspace.id === id) ? id : ''
+  const target = opts?.getTarget()
+  return (
+    alive(pickedWorkspace) ||
+    alive(getSettings().aiLastWorkspace) ||
+    (target ? opts?.docHost?.workspaceOf?.(target.id) ?? '' : '') ||
+    ''
+  )
+}
+
+/** 记住选择（W-10：下次打开面板回到同一个工作区；目标被删则自动回落） */
+function rememberWorkspace(id: string): void {
+  pickedWorkspace = id
+  if (getSettings().aiLastWorkspace !== id) updateSettings({ aiLastWorkspace: id })
+}
 /** 状态栏里的方案名（配置名）；异步读，读到再重画那一行 */
 let planName = ''
 /** 读库的世代号：慢查询回来时文件可能已经换过两次 */
@@ -217,7 +298,7 @@ let historyAnchor: HTMLElement | null = null
 
 export function createChatView(options: ChatOptions): ChatView {
   opts = options
-  return { refresh, reset, relabel, newSession, openHistory }
+  return { refresh, reset, relabel, newSession, openHistory, openWorkspaces }
 }
 
 /**
@@ -233,6 +314,9 @@ function relabel(): void {
   lastLang = lang
   if (!ui) return
   ui.input.placeholder = t('ai.chat.placeholder')
+  // 授权入口的 tooltip 也是骨架里写死的：不补这一句，切到英文后悬停还是中文
+  ui.grants.title = t('ai.grant.panelTitle')
+  ui.grants.setAttribute('aria-label', ui.grants.title)
   // 消息里也有逐条 `t()` 出来的字：整屏重画一次最省事，也不会漏掉折叠节点
   paint()
 }
@@ -254,6 +338,7 @@ function refresh(): void {
   if (!ui) build()
   void refreshPlan()
   void align()
+  void loadWsStats()
 }
 
 function reset(): void {
@@ -263,7 +348,7 @@ function reset(): void {
   owner = null
   shown = null
   activeId = undefined
-  activeFile = null
+  activeWorkspace = ''
   alignGen += 1
   paintGen += 1
   closePop()
@@ -320,7 +405,19 @@ function build(): void {
   const keyEnter = sendKeyOption('enter')
   const keyMod = sendKeyOption('mod')
   keys.append(keyEnter, keyMod)
-  statusBar.append(status, keys)
+  // 授权入口：文件夹图标，紧挨「方案·模型」左侧；点开管理当前 AI 授权列表
+  const grants = document.createElement('button')
+  grants.type = 'button'
+  grants.className = 'ai-chat-grants'
+  grants.title = t('ai.grant.panelTitle')
+  grants.setAttribute('aria-label', t('ai.grant.panelTitle'))
+  grants.innerHTML = ICON_FOLDER
+  // 联网 / 脚本开关常驻在输入框下方（P-11）：不用翻浮层就知道模型现在能不能联网、能不能跑脚本
+  const flags = div('ai-flags')
+  const netChip = flagChip('network')
+  const scriptChip = flagChip('script')
+  flags.append(netChip, scriptChip)
+  statusBar.append(grants, flags, status, keys)
 
   box.append(head, log, composer, statusBar)
   host.append(box)
@@ -337,6 +434,9 @@ function build(): void {
     statusText,
     keyEnter,
     keyMod,
+    grants,
+    netChip,
+    scriptChip,
     pop: null,
     unpop: null,
   }
@@ -351,6 +451,7 @@ function build(): void {
     }
     void send()
   })
+  grants.addEventListener('click', () => void toggleGrants())
   status.addEventListener('click', () => void toggleStatus())
   input.addEventListener('input', () => autosize(input))
   input.addEventListener('keydown', (e) => {
@@ -423,14 +524,14 @@ function sendKeyOption(mode: 'enter' | 'mod'): HTMLButtonElement {
 /** `force` 用于「刚写完库」：库是权威，DOM 必须跟着重新读 */
 async function align(force = false): Promise<void> {
   if (!opts || !ui) return
-  const fileId = opts.getTarget()?.id ?? null
+  const workspaceId = currentWorkspaceId()
   // 流式中不动：DOM 里那条正在长，重画会把它的半截抹掉
   if (run && !force) return
-  if (!force && shown && shown.fileId === fileId) return
+  if (!force && shown && shown.workspaceId === workspaceId) return
 
-  // 换了文件就丢掉「上次选的是哪条」：会话是按文件选的，跨文件沿用会张冠李戴
-  if (fileId !== activeFile) {
-    activeFile = fileId
+  // 换了工作区就丢掉「上次选的是哪条」：跨工作区沿用会张冠李戴
+  if (workspaceId !== activeWorkspace) {
+    activeWorkspace = workspaceId
     activeId = undefined
   }
 
@@ -442,7 +543,7 @@ async function align(force = false): Promise<void> {
       // 用户刚点了「新建会话」：库里有旧的也不取，就让这一屏空着
       session = null
     } else {
-      session = activeId ? await getSession(activeId) : await findSession(fileId)
+      session = activeId ? await getSession(activeId) : await findSession(workspaceId)
       if (session) messages = await loadMessages(session.id)
     }
   } catch {
@@ -452,7 +553,7 @@ async function align(force = false): Promise<void> {
   if (gen !== alignGen || !ui) return
 
   const hidden = Math.max(0, messages.length - MAX_RENDERED)
-  shown = { fileId, session, messages: messages.slice(-MAX_RENDERED), hidden }
+  shown = { workspaceId, session, messages: messages.slice(-MAX_RENDERED), hidden }
   paint()
 }
 
@@ -468,7 +569,12 @@ function paint(): void {
     ui.log.append(note(t('ai.chat.hidden', { count: shown.hidden }), 'ai-chat-note'))
   }
   if (!shown || !session || shown.messages.length === 0) {
-    ui.log.append(div('ai-chat-empty', t('ai.chat.empty')))
+    // 没有任何工作区时，面板默认显示工作区列表（W-10）：入口不能只藏在标题栏那颗按钮里
+    ui.log.append(
+      currentWorkspaceId()
+        ? div('ai-chat-empty', t('ai.chat.empty'))
+        : workspaceListNode(),
+    )
   } else {
     for (const message of shown.messages) ui.log.append(messageNode(message, gen))
   }
@@ -487,7 +593,14 @@ function paintHead(): void {
   const count = shown ? shown.messages.length + shown.hidden : 0
   ui.title.textContent = session?.title || t('ai.chat.untitled')
   ui.title.title = session?.title || ''
-  ui.meta.textContent = `${session?.fileName || opts?.getTarget()?.name || t('ai.chat.noFile')} · ${
+  // 会话归工作区（W-01 / W-S3）：第一段说**工作区名**。没有工作区的过渡态退回当前文件名，
+  // 否则这里会是一条光秃秃的「· 3 条」，看不出这是什么范围的对话。
+  const workspaceId = currentWorkspaceId()
+  const scope =
+    opts?.docHost?.listWorkspaces?.().find((workspace) => workspace.id === workspaceId)?.name ||
+    opts?.getTarget()?.name ||
+    t('ai.chat.noFile')
+  ui.meta.textContent = `${scope} · ${
     session ? t('ai.chat.count', { count }) : t('ai.chat.untitled')
   }`
   // 发送按钮是箭头图标：语言无关，切语言时改的是 title / aria
@@ -497,6 +610,66 @@ function paintHead(): void {
   ui.send.classList.toggle('is-stop', Boolean(run))
   paintStatus()
   paintSendKey()
+  paintFlags()
+}
+
+/**
+ * 联网 / 脚本 chip：一眼看到当前状态，点一下就地切换（P-11）。
+ * 切换只改设置，不改本轮已下发的工具表 —— 下一次请求才生效，这和浮层里的勾选一致。
+ */
+function flagChip(kind: 'network' | 'script'): HTMLButtonElement {
+  const chip = document.createElement('button')
+  chip.type = 'button'
+  chip.className = 'ai-flag'
+  chip.dataset.flag = kind
+  chip.innerHTML = kind === 'network' ? ICON_NETWORK : ICON_SCRIPT
+  chip.addEventListener('click', () => {
+    const settings = getSettings()
+    if (kind === 'network') updateSettings({ aiNetwork: settings.aiNetwork === false })
+    else updateSettings({ aiScript: settings.aiScript !== true })
+    paintFlags()
+    announceFlag(kind)
+  })
+  return chip
+}
+
+function paintFlags(): void {
+  if (!ui) return
+  const settings = getSettings()
+  const network = settings.aiNetwork !== false
+  const script = settings.aiScript === true
+  const pairs: Array<[HTMLButtonElement, 'network' | 'script', boolean]> = [
+    [ui.netChip, 'network', network],
+    [ui.scriptChip, 'script', script],
+  ]
+  for (const [chip, kind, on] of pairs) {
+    const label = kind === 'network' ? t('ai.flag.network') : t('ai.flag.script')
+    // 图标态：亮 = 开、灰虚线 = 关；名字和状态只进 tooltip，不再占宽度
+    chip.classList.toggle('is-off', !on)
+    chip.title = t('ai.flag.title', {
+      name: label,
+      state: t(on ? 'ai.flag.stateOn' : 'ai.flag.stateOff'),
+    })
+    chip.setAttribute('aria-label', chip.title)
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
+}
+
+/** 切换开关后提醒一次：说明这改变的是「模型能做什么」，不是这一条消息的开关 */
+function announceFlag(kind: 'network' | 'script'): void {
+  const on = kind === 'network' ? getSettings().aiNetwork !== false : getSettings().aiScript === true
+  const name = kind === 'network' ? t('ai.flag.network') : t('ai.flag.script')
+  toast(t(on ? 'ai.flag.turnedOn' : 'ai.flag.turnedOff', { name }))
+}
+
+/** 新开会话时把两个开关的状态说一遍（P-11：开会话提醒一次），避免「以为能联网其实关着」 */
+function announceFlags(): void {
+  const settings = getSettings()
+  const flags = [
+    `${t('ai.flag.network')} ${settings.aiNetwork !== false ? t('ai.flag.on') : t('ai.flag.off')}`,
+    `${t('ai.flag.script')} ${settings.aiScript === true ? t('ai.flag.on') : t('ai.flag.off')}`,
+  ].join(' · ')
+  toast(t('ai.flag.sessionHint', { flags }))
 }
 
 /** 状态栏那行：「方案名 · 模型」。放在输入框下面，随时能看出现在是谁在答 */
@@ -507,6 +680,28 @@ function paintStatus(): void {
   ui.statusText.textContent = label || t('ai.chat.statusEmpty')
   ui.status.title = t('ai.chat.statusHint')
   ui.status.hidden = false
+  paintGrants()
+}
+
+/**
+ * 授权按钮：**有引用才点亮**，条数写进 tooltip。
+ *
+ * 自动引用（§8.4 第 7 步）加完后要立刻反映到这里，否则用户点开浮层才发现多了东西，
+ * 会以为是别处改的。
+ */
+function paintGrants(): void {
+  if (!ui) return
+  // 数**当前工作区**的引用，不是「库里的第一个」：多工作区下那颗按钮点开了
+  // 才不会是别人家的清单（W-S5 顺手收掉的旧语义）
+  const workspaceId = currentWorkspaceId()
+  const count = workspaceId
+    ? (opts?.docHost?.workspace?.(workspaceId)?.root.aiWorkspace?.grants.length ?? 0)
+    : 0
+  ui.grants.classList.toggle('is-on', count > 0)
+  ui.grants.dataset.count = String(count)
+  const label = count ? `${t('ai.grant.panelTitle')} · ${count}` : t('ai.grant.panelTitle')
+  ui.grants.title = label
+  ui.grants.setAttribute('aria-label', label)
 }
 
 /** 状态栏右端的发送键：选中的那颗点亮，另一颗只留字形 */
@@ -556,6 +751,13 @@ function messageNode(message: ChatMessage, gen: number): HTMLElement {
     return turn
   }
 
+  // 系统事件（P-06）：cp 的可见记录。不是折叠的 tool 结果，也不是 AI 说的话，
+  // 独占一行、写明来源与目标，让用户一眼看出「刚才真的复制了文件」
+  if (message.role === 'event') {
+    turn.append(div('ai-event', message.text))
+    return turn
+  }
+
   // 助手：可能带着「我调了哪些工具」和一段文字（只有工具没文字也是正常形态）
   if (message.toolCalls?.length) {
     turn.append(
@@ -589,6 +791,11 @@ const TOOL_LABELS: Record<string, MessageKey> = {
   apply_edits: 'ai.tool.apply_edits',
   replace_doc: 'ai.tool.replace_doc',
   get_state: 'ai.tool.get_state',
+  read_file: 'ai.tool.read_file',
+  write_file: 'ai.tool.write_file',
+  mkdir: 'ai.tool.mkdir',
+  rm: 'ai.tool.rm',
+  mv: 'ai.tool.mv',
 }
 
 function toolLabel(name: string): string {
@@ -707,6 +914,49 @@ interface TurnEnv {
   docHost: DocHost | null
 }
 
+/**
+ * 发消息前把当前打开的文件纳入引用（W-04 / §8.4）。
+ *
+ * 顺序固定：已在 `:proj` 子树内 → 跳过；已被现有授权覆盖 → 跳过；否则加进 `:link`
+ * 并回一条可见事件。**不加就发**是错的：`read_doc`、选区、光标都走「当前打开文件」
+ * 通道，只有文件同时进了引用集，模型才能既拿到全文又拿到光标上下文。
+ *
+ * 重复发消息不该堆一串同样的授权：`isGrantedBy` 会沿祖先链判定，第二句就跳过了。
+ */
+async function autoReference(
+  target: ChatTarget | null,
+  workspaceId: string,
+  sessionId: string,
+): Promise<ChatMessage | null> {
+  const docHost = opts?.docHost
+  if (!docHost?.grantRef || !target || !workspaceId) return null
+  const view = docHost.workspace?.(workspaceId) ?? null
+  if (!view) return null
+  if (inSubtree(target.id, view.root.id, view.nodes)) return null
+  const grants = (view.root.aiWorkspace?.grants ?? []).map((grant) => grant.refId)
+  if (isGrantedBy(target.id, grants, view.nodes)) return null
+
+  let added = false
+  try {
+    added = await docHost.grantRef(target.id, workspaceId)
+  } catch {
+    added = false
+  }
+  if (!added) return null
+  paintGrants()
+
+  try {
+    return await appendMessage({
+      sessionId,
+      role: 'event',
+      text: t('ai.grant.auto', { name: target.name, ws: view.root.name }),
+    })
+  } catch {
+    // 事件没落上不影响这一轮：引用已经加进去了，模型照样能读到
+    return null
+  }
+}
+
 async function send(): Promise<void> {
   if (!opts || !ui || run || sending) return
   const config = getConfig()
@@ -715,7 +965,7 @@ async function send(): Promise<void> {
   if (!text) return
 
   const target = opts.getTarget()
-  const fileId = target?.id ?? null
+  let workspaceId = currentWorkspaceId()
   const docHost = opts.docHost ?? null
   const env: TurnEnv = {
     baseUrl: config.baseUrl,
@@ -736,13 +986,25 @@ async function send(): Promise<void> {
   autosize(ui.input)
   let current: Run | null = null
   try {
-    let session = shown && shown.fileId === fileId ? shown.session : null
+    // 没选工作区也能直接发（别逼人先去列表里点一下）：发出去这一刻补建一个。
+    // 会话必须有归属 —— 落在空 workspaceId 上的会话既没有工具、也不引用文件，
+    // 等于把「AI 什么也做不了」包装成了一次正常回复。
+    if (!workspaceId) {
+      const created = await docHost?.createWorkspace?.()
+      if (!created) throw new Error('workspace-unavailable')
+      workspaceId = created.id
+      rememberWorkspace(workspaceId)
+      activeWorkspace = workspaceId
+      activeId = undefined
+      shown = null
+    }
+    let session = shown && shown.workspaceId === workspaceId ? shown.session : null
     if (!session) {
-      session = await createSession({ fileId, fileName: target?.name ?? '' })
+      session = await createSession({ workspaceId })
       // 记住这一条：「新建」的空屏到这里才真正有了会话，不记的话 align 会退回去挑库里最新的
-      activeFile = fileId
+      activeWorkspace = workspaceId
       activeId = session.id
-      shown = { fileId, session, messages: [], hidden: 0 }
+      shown = { workspaceId, session, messages: [], hidden: 0 }
       paint()
     }
     const sessionId = session.id
@@ -752,16 +1014,27 @@ async function send(): Promise<void> {
     const view: Shown =
       shown && shown.session?.id === sessionId
         ? shown
-        : { fileId, session, messages: [], hidden: 0 }
+        : { workspaceId, session, messages: [], hidden: 0 }
     view.messages.push(userMessage)
     shown = view
     // 发出去就该看见。不整屏 `paint()`：那会把已有历史里的 Markdown 全部重新解析一遍
     paintUserTurn(userMessage)
 
+    // §8.4 固定顺序：用户消息落库之后、组装 wire 之前，把当前文件纳入引用。
+    // 事件消息也进 view.messages，否则这一轮的上下文里没有「刚引用了什么」。
+    const autoRef = await autoReference(target, workspaceId, sessionId)
+    if (autoRef) {
+      view.messages.push(autoRef)
+      if (ui) {
+        ui.log.append(messageNode(autoRef, paintGen))
+        stickBottom(true)
+      }
+    }
+
     const abort = new AbortController()
     current = {
       sessionId,
-      fileId,
+      workspaceId,
       abort,
       turn: null,
       body: null,
@@ -771,8 +1044,9 @@ async function send(): Promise<void> {
       failed: false,
       error: '',
       rounds: 0,
-      // 额度按「一次用户发言」重置：换一句就重新给 6 次写入
-      quota: { writesLeft: MAX_WRITES, sessionId },
+      // 额度按「一次用户发言」重置：换一句就重新给满
+      // 前缀用的是工作区 id（W-07），与会话 id 无关
+      quota: { writesLeft: MAX_WRITES, workspaceId },
       stopped: '',
     }
     run = current
@@ -800,10 +1074,11 @@ async function send(): Promise<void> {
   if (run === finished) run = null
   if (!ui) return
 
-  // 期间换了文件 / 点了「新建」/ 切到别的会话：这一轮的 DOM 已经不属于当前视图，
+  // 期间换了工作区 / 点了「新建」/ 切到别的会话：这一轮的 DOM 已经不属于当前视图，
   // 只能整屏从库里重读一次（也用不着在这上面省）。
+  // 注意只比较工作区：同一工作区内切文件不打断本轮。
   const switched =
-    (opts?.getTarget()?.id ?? null) !== finished.fileId ||
+    currentWorkspaceId() !== finished.workspaceId ||
     shown?.session?.id !== finished.sessionId
   if (switched) {
     await align(true)
@@ -834,12 +1109,9 @@ async function send(): Promise<void> {
 /** 库里的消息 → 线上报文。tool 与 tool_calls 原样带上，否则历史被截断成残链（INV-6） */
 function toWire(message: ChatMessage): WireMessage {
   if (message.role === 'tool') {
-    return {
-      role: 'tool',
-      content: message.text,
-      tool_call_id: message.toolCallId ?? '',
-      name: message.name ?? '',
-    }
+    const base = { role: 'tool' as const, content: message.text, tool_call_id: message.toolCallId ?? '' }
+    // 空串 name 有些 provider 会当非法字段拒掉；没有就不发
+    return message.name ? { ...base, name: message.name } : base
   }
   if (message.role === 'assistant') {
     return {
@@ -848,14 +1120,45 @@ function toWire(message: ChatMessage): WireMessage {
       ...(message.toolCalls?.length ? { tool_calls: message.toolCalls } : {}),
     }
   }
+  // P-06：事件也要给 AI 看。映射成 user 而非 system —— system 只在 payload 头部注入，
+  // 中途插一条会破坏结构；user 又是 trimHistory 的合法切点，不会被拦腰截断（§6）。
+  if (message.role === 'event') return eventWire(message.text)
   return { role: 'user', content: message.text }
+}
+
+/** 事件进上下文的统一定性前缀：明确告诉模型「这是系统记录，不是你的新指令」 */
+function eventWire(text: string): WireMessage {
+  // 前缀与 trimHistory 共用一份常量：它决定「这条 user 不是对话边界」，
+  // 两边写岔了就会在裁剪时把 tool 链切断
+  return { role: 'user', content: `${EVENT_PREFIX}${text}` }
+}
+
+/** 结构化事件 → 落库文案。时间用本地化的时分秒，来源/目标是虚拟地址（AI 认得） */
+function eventText(event: ToolEvent): string {
+  const time = new Date(event.at).toLocaleTimeString()
+  if (event.kind === 'copy') {
+    return t('ai.event.copy', { from: event.from, to: event.to, time })
+  }
+  if (event.kind === 'write') {
+    return t('ai.event.write', { to: event.to, time })
+  }
+  if (event.kind === 'mkdir') {
+    return t('ai.event.mkdir', { to: event.to, time })
+  }
+  if (event.kind === 'rm') {
+    return t('ai.event.rm', { from: event.from, time })
+  }
+  if (event.kind === 'mv') {
+    return t('ai.event.mv', { from: event.from, to: event.to, time })
+  }
+  return `${time} · ${event.kind}`
 }
 
 /** 用户原话 + 位置块（无选区时约 60 token；有选区才附内容，见 context.locator） */
 function withLocator(text: string, docHost: DocHost | null, tag: string): string {
   if (!docHost) return text
   try {
-    return `${text}\n\n${locator(docHost.stat(), docHost.text(), tag)}`
+    return `${text}\n\n${locator(docHost.stat(), docHost.text(), tag, !!currentWorkspaceId())}`
   } catch {
     // 拿不到文档状态（切文件瞬间）也照发：宁缺位置，不吞这一句
     return text
@@ -892,18 +1195,30 @@ async function converse(current: Run, base: WireMessage[], env: TurnEnv): Promis
     messages = [...messages, { role: 'assistant', content: outcome.text || null, tool_calls: outcome.calls }]
 
     let exhausted = false
+    const events: string[] = []
     for (const call of outcome.calls) {
-      const result = exhausted ? budgetResult() : await runTool(current, call, env)
-      if (!exhausted && isBudgetError(result)) exhausted = true
-      // 额度用尽时**剩下的调用也要回一条**：否则下一轮报文里出现
+      // 用户点了停止：剩下的调用也必须各回一条结果（见 abortedResult），
+      // 不能在这里直接 return —— 那会把残链留在库里
+      const aborted = current.abort.signal.aborted
+      const result = aborted ? abortedResult() : exhausted ? budgetResult() : await runTool(current, call, env)
+      if (!aborted && !exhausted && isBudgetError(result)) exhausted = true
+      // 额度用尽 / 中断时**剩下的调用也要回一条**：否则下一轮报文里出现
       // 「有 tool_calls、缺 tool 结果」的残链，provider 直接 400
       messages = [
         ...messages,
         { role: 'tool', content: result.content, tool_call_id: call.id, name: call.function.name },
       ]
       await persistTool(current, call, result)
-      if (current.abort.signal.aborted) return
+      // P-06：cp 等工具成功后的可见事件，落一条消息给用户看、也进上下文给 AI 看。
+      // 先攒着、等这一组的 tool 结果全落完再插：夹在两条 tool 之间会让 provider
+      // 判定「tool_calls 后面不是 tool 消息」，整轮 400。
+      if (result.event) events.push(eventText(result.event))
     }
+    for (const text of events) {
+      messages = [...messages, eventWire(text)]
+      await persistEvent(current, text)
+    }
+    if (current.abort.signal.aborted) return
 
     if (exhausted) {
       current.stopped = 'budget'
@@ -911,7 +1226,7 @@ async function converse(current: Run, base: WireMessage[], env: TurnEnv): Promis
     }
   }
 
-  // 走完 20 轮还在要工具：停下，让用户决定要不要说「继续」
+  // 走完全部轮次还在要工具：停下，让用户决定要不要说「继续」
   current.stopped = 'rounds'
 }
 
@@ -951,10 +1266,18 @@ async function streamRound(
   messages: WireMessage[],
   env: TurnEnv,
 ): Promise<RoundOutcome> {
-  const tools: ToolSchema[] | undefined = env.toolbox ? toolSchemas() : undefined
+  const settings = getSettings()
+  const tools: ToolSchema[] | undefined = env.toolbox
+    ? toolSchemas({ script: settings.aiScript === true, network: settings.aiNetwork !== false })
+    : undefined
   // 每轮都重新裁：工具结果让报文涨得很快，只有发请求这一刻的判断算数
   const trimmed = trimHistory(messages, BUDGET_TOKENS)
-  const payload: WireMessage[] = [{ role: 'system', content: systemPrompt() }, ...trimmed.messages]
+  const payload: WireMessage[] = [
+    { role: 'system', content: systemPrompt({ workspaceId: current.workspaceId }) },
+    // 库里可能存着残链（旧版本 / 中断 / 手改）：发之前补一次，否则一条脏记录
+    // 就让整个会话永远 400，用户只会看到「全部都坏了」
+    ...sanitizeWire(trimmed.messages),
+  ]
 
   let text = ''
   let failed = false
@@ -1122,6 +1445,20 @@ async function persistTool(
   }
 }
 
+/** P-06：事件落库 + 就地渲染。没有 toolCallId，是一条独立的可见消息 */
+async function persistEvent(current: Run, text: string): Promise<void> {
+  try {
+    const row = await appendMessage({ sessionId: current.sessionId, role: 'event', text })
+    adopt(row)
+    if (ui) {
+      ui.log.append(messageNode(row, paintGen))
+      stickBottom(true)
+    }
+  } catch {
+    current.error ||= t('ai.err.io')
+  }
+}
+
 /* ------------------------------------------------------------------ 小额度的兜底 */
 
 function budgetResult(): ToolResult {
@@ -1138,6 +1475,20 @@ function isBudgetError(result: ToolResult): boolean {
   return !result.ok && result.content.includes('"error":"budget"')
 }
 
+/**
+ * 中断时也要给每个调用补一条结果。
+ *
+ * 只 `return` 不补，库里就留下「assistant 带 3 个 tool_calls、只有 1 条 tool」的残链，
+ * 下一句话发出去必被 provider 400（`insufficient tool messages following tool_calls`）——
+ * 用户看到的是「整个 AI 不能用」，而根因只是点了下停止。
+ */
+function abortedResult(): ToolResult {
+  return {
+    ok: false,
+    content: JSON.stringify({ error: 'aborted', message: '用户中止了这次操作，结果未知' }),
+  }
+}
+
 /* ------------------------------------------------------------------ 会话：新建 / 历史 / 切换 */
 
 /**
@@ -1151,12 +1502,14 @@ function newSession(): void {
   // 新会话是「主动离开当前这轮」：正在流的那个干脆停掉，别两条线并行
   run?.abort.abort()
   closePop()
-  activeFile = opts.getTarget()?.id ?? null
+  activeWorkspace = currentWorkspaceId()
   activeId = null
-  shown = { fileId: activeFile, session: null, messages: [], hidden: 0 }
+  shown = { workspaceId: activeWorkspace, session: null, messages: [], hidden: 0 }
   ui.input.value = ''
   autosize(ui.input)
   paint()
+  // P-11：新开会话提醒一次当前开关状态（脚本默认关，容易被误以为「能跑」）
+  announceFlags()
   ui.input.focus()
 }
 
@@ -1176,10 +1529,10 @@ async function openHistory(anchor?: HTMLElement): Promise<void> {
 
 async function fillHistory(body: HTMLElement): Promise<void> {
   body.append(div('ai-pop-title', t('ai.chat.history')))
-  const fileId = opts?.getTarget()?.id ?? null
+  const workspaceId = currentWorkspaceId()
   let list: ChatSession[] = []
   try {
-    list = await listSessions(fileId)
+    list = await listSessions(workspaceId)
   } catch {
     body.append(div('ai-pop-empty', t('ai.err.io')))
     return
@@ -1210,16 +1563,158 @@ async function fillHistory(body: HTMLElement): Promise<void> {
   }
 }
 
+/* ------------------------------------------------------------------ 工作区（W-S4） */
+
+/** 工作区切换浮层的锚点 = 面板标题栏那颗「工作区」按钮（同历史浮层的道理） */
+let workspaceAnchor: HTMLElement | null = null
+/** 各工作区的会话数/最后活动：面板列表要显示，异步补上后重画 */
+let wsStats: ReadonlyMap<string, { count: number; lastAt: number }> = new Map()
+
+async function loadWsStats(): Promise<void> {
+  try {
+    wsStats = await sessionStatsByWorkspace()
+  } catch {
+    return
+  }
+  // 列表态才需要这份数字；有工作区时聊天区不显示它，重画是浪费
+  if (ui && !currentWorkspaceId()) paint()
+}
+
+/** 切到某个工作区：在途请求停掉，否则旧工作区的回复会写进新会话的界面 */
+async function pickWorkspace(id: string): Promise<void> {
+  if (!ui) return
+  closePop()
+  // 已经是它也要重画一次：新建完工作区的那一刻面板还停在列表态，
+  // 这里不重画就会一直显示「还没有工作区」，直到下次切文件
+  if (id !== currentWorkspaceId()) {
+    run?.abort.abort()
+    activeWorkspace = id
+    activeId = undefined
+    shown = null
+  }
+  rememberWorkspace(id)
+  await align(true)
+}
+
+async function createWorkspaceAndPick(): Promise<void> {
+  const created = await opts?.docHost?.createWorkspace?.()
+  if (!created) return
+  closePop()
+  await pickWorkspace(created.id)
+}
+
+/**
+ * 标题栏「工作区」按钮（§8.5）：列出**引用过当前文件**的工作区。
+ *
+ * 只列相关的，不列全库：这颗按钮回答的是「这个文件在哪些工作区里能聊」。
+ * 全库列表在面板默认视图里（`workspaceListNode()`），那才是「挑一个工作区开始」。
+ */
+async function openWorkspaces(anchor?: HTMLElement): Promise<void> {
+  if (!ui) return
+  if (anchor) workspaceAnchor = anchor
+  if (ui.pop?.dataset.kind === 'workspaces') {
+    closePop()
+    return
+  }
+  const fixed = workspaceAnchor?.isConnected ? workspaceAnchor : null
+  await openPop('workspaces', fixed ?? ui.title, fillWorkspaces, fixed ? 'host' : 'box')
+}
+
+async function fillWorkspaces(body: HTMLElement): Promise<void> {
+  body.append(div('ai-pop-title', t('ai.ws.popTitle')))
+  const target = opts?.getTarget() ?? null
+  const all = opts?.docHost?.listWorkspaces?.() ?? []
+  const current = currentWorkspaceId()
+  // 没打开文件时无从判断「相关」，就列全库 —— 空着比列全库更像坏了
+  const related = target
+    ? all.filter((workspace) => {
+        const view = opts?.docHost?.workspace?.(workspace.id)
+        return view ? isGrantedBy(target.id, workspace.grantIds, view.nodes) : false
+      })
+    : all
+  if (!related.length) {
+    body.append(div('ai-pop-empty', t('ai.ws.noneRelated')))
+  } else {
+    for (const workspace of related) {
+      const row = div('ai-pop-row')
+      if (workspace.id === current) row.classList.add('is-active')
+      const main = document.createElement('button')
+      main.type = 'button'
+      main.className = 'ai-pop-main'
+      const stat = wsStats.get(workspace.id)
+      main.append(
+        div('ai-pop-name', workspace.name),
+        div(
+          'ai-pop-sub',
+          stat
+            ? `${t('ai.chat.count', { count: stat.count })} · ${clockOf(stat.lastAt)}`
+            : t('ai.ws.noSessions'),
+        ),
+      )
+      main.addEventListener('click', () => void pickWorkspace(workspace.id))
+      row.append(main)
+      if (workspace.id === current) row.append(div('ai-pop-mark', '✓'))
+      body.append(row)
+    }
+  }
+  // 入口始终在：一个都还没建的时候，这里就是唯一能建的地方（W-10）
+  const create = document.createElement('button')
+  create.type = 'button'
+  create.className = 'ai-pop-action'
+  create.textContent = t('ai.ws.new')
+  create.addEventListener('click', () => void createWorkspaceAndPick())
+  body.append(create)
+}
+
+/**
+ * 面板默认视图：工作区列表（W-10）。
+ *
+ * 只在**一个工作区都没有**时出现。有工作区就进它的会话 —— 每次都先看一遍列表
+ * 再点一下，是把「默认视图」做成了「每次多一次点击」。
+ */
+function workspaceListNode(): HTMLElement {
+  const box = div('ai-ws-list')
+  box.append(div('ai-ws-head', t('ai.ws.pickTitle')))
+  const all = opts?.docHost?.listWorkspaces?.() ?? []
+  if (!all.length) box.append(div('ai-ws-empty', t('ai.ws.empty')))
+  for (const workspace of all) {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = 'ai-ws-row'
+    const stat = wsStats.get(workspace.id)
+    row.append(
+      div('ai-pop-name', workspace.name),
+      div(
+        'ai-pop-sub',
+        stat
+          ? `${t('ai.chat.count', { count: stat.count })} · ${clockOf(stat.lastAt)}`
+          : t('ai.ws.noSessions'),
+      ),
+    )
+    row.addEventListener('click', () => void pickWorkspace(workspace.id))
+    box.append(row)
+  }
+  const create = document.createElement('button')
+  create.type = 'button'
+  create.className = 'ai-ws-new'
+  create.textContent = t('ai.ws.new')
+  create.addEventListener('click', () => void createWorkspaceAndPick())
+  box.append(create)
+  // 不点也能开始：发送时自动补建（见 send()），先把这条路说出来，别让人以为必须先选
+  box.append(div('ai-ws-hint', t('ai.ws.autoHint')))
+  return box
+}
+
 /** 从历史里挑一条：中途切走会把正在跑的那轮停掉（和新建同理，避免两条线并行） */
 async function switchTo(session: ChatSession): Promise<void> {
   if (!ui) return
   closePop()
   if (session.id === shown?.session?.id) return
   run?.abort.abort()
-  activeFile = session.fileId
+  activeWorkspace = session.workspaceId
   activeId = session.id
-  // 直接对齐到这一条，不走 `align()` 的「同文件早退」
-  shown = { fileId: session.fileId, session, messages: [], hidden: 0 }
+  // 直接对齐到这一条，不走 `align()` 的「同工作区早退」
+  shown = { workspaceId: session.workspaceId, session, messages: [], hidden: 0 }
   paint()
   await align(true)
 }
@@ -1239,7 +1734,7 @@ async function dropSession(session: ChatSession): Promise<void> {
   // 删的正好是当前这条 → 退回「新会话」的空屏；否则只刷新历史列表
   if (session.id === shown?.session?.id) {
     activeId = null
-    shown = { fileId: shown?.fileId ?? null, session: null, messages: [], hidden: 0 }
+    shown = { workspaceId: shown?.workspaceId ?? '', session: null, messages: [], hidden: 0 }
     paint()
   }
   closePop()
@@ -1247,6 +1742,51 @@ async function dropSession(session: ChatSession): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ 状态栏：方案 / 模型 / 参数 */
+
+async function toggleGrants(): Promise<void> {
+  if (!ui) return
+  if (ui.pop?.dataset.kind === 'grants') {
+    closePop()
+    return
+  }
+  await openPop('grants', ui.grants, async (body) => {
+    body.append(div('ai-pop-title', t('ai.grant.panelTitle')))
+    const workspaceId = currentWorkspaceId()
+    const view = workspaceId ? (opts?.docHost?.workspace?.(workspaceId) ?? null) : null
+    if (!view) {
+      body.append(div('ai-pop-sub', t('ai.grant.none')))
+      return
+    }
+    const grants = view.root.aiWorkspace?.grants ?? []
+    if (!grants.length) {
+      body.append(div('ai-pop-sub', t('ai.grant.none')))
+      return
+    }
+    for (const grant of grants) {
+      const node = view.nodes.get(grant.refId)
+      const row = div('ai-pop-row is-flat')
+      const label = div('ai-pop-name', node?.name ?? t('ai.grant.missing'))
+      const remove = document.createElement('button')
+      remove.type = 'button'
+      remove.className = 'btn ai-pop-remove'
+      // 图标 + tooltip：一行宽 260px 里再塞「取消」两个字，名字一长就被挤成省略号
+      remove.innerHTML = ICON_CLOSE
+      remove.title = t('ai.grant.revoke')
+      remove.setAttribute('aria-label', t('ai.grant.revoke'))
+      remove.addEventListener('click', async () => {
+        // 带上这个清单属于谁：跨工作区引用（B 引用了 A 里的文件）时，
+        // 只给 refId 会让 app 侧按「文件老家」去猜，点了等于没反应
+        await opts?.docHost?.revokeGrant?.(grant.refId, workspaceId)
+        // 重绘：取消后列表与状态栏角标立刻反映新状态
+        paintGrants()
+        closePop()
+        void toggleGrants()
+      })
+      row.append(label, remove)
+      body.append(row)
+    }
+  })
+}
 
 async function toggleStatus(): Promise<void> {
   if (!ui) return
@@ -1434,8 +1974,9 @@ async function openPop(
   } else {
     pop.style.left = `${Math.max(0, rect.left - surfaceRect.left)}px`
     pop.style.width = `${Math.min(surfaceRect.width - 8, 260)}px`
-    if (kind === 'status') {
-      // 状态栏在最下面：往上开，别顶出面板
+    if (kind === 'status' || kind === 'grants') {
+      // 这两个入口都在状态栏（输入框下面、盒子最底部）：只能往上开。
+      // 往下开会顶出 `.ai-chat-box` 的 `overflow: hidden`，浮层只剩标题行。
       pop.style.bottom = `${surfaceRect.bottom - rect.top + 4}px`
     } else {
       pop.style.top = `${rect.bottom - surfaceRect.top + 4}px`
@@ -1514,11 +2055,22 @@ function paramsRow(): HTMLElement {
   reasoning.className = 'ai-check'
   // 与 `showReasoning` 同一口径：只有显式关掉（=== false）才不显示
   reasoning.checked = settings.aiReasoning !== false
+  // 联网缺省开；脚本运行缺省关（plans/ai-project-v2.md P-11 / P-16）
+  const network = document.createElement('input')
+  network.type = 'checkbox'
+  network.className = 'ai-check'
+  network.checked = settings.aiNetwork !== false
+  const script = document.createElement('input')
+  script.type = 'checkbox'
+  script.className = 'ai-check'
+  script.checked = settings.aiScript === true
 
   row.append(
     param('ai.field.maxTokens', tokens),
     param('ai.field.temperature', temp),
     param('ai.field.reasoning', reasoning),
+    param('ai.field.network', network),
+    param('ai.field.script', script),
   )
   box.append(row)
 
@@ -1539,6 +2091,18 @@ function paramsRow(): HTMLElement {
   })
   reasoning.addEventListener('change', () => {
     updateSettings({ aiReasoning: reasoning.checked })
+  })
+  // 同一个设置有两处入口（这行复选框 / 输入框下方的图标开关），
+  // 改完必须回写状态栏，否则外面那两个图标还是旧样子
+  network.addEventListener('change', () => {
+    updateSettings({ aiNetwork: network.checked })
+    paintFlags()
+    announceFlag('network')
+  })
+  script.addEventListener('change', () => {
+    updateSettings({ aiScript: script.checked })
+    paintFlags()
+    announceFlag('script')
   })
   return box
 }

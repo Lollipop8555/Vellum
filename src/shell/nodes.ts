@@ -24,6 +24,8 @@ export interface NewFileInput {
   engine: EngineId
   size?: number
   readOnlyUser?: boolean
+  /** 二进制资产标记（P-08）；文本文件不传 */
+  asset?: { mime: string }
 }
 
 export function createFileNode(input: NewFileInput): FileNode {
@@ -47,6 +49,7 @@ export function createFileNode(input: NewFileInput): FileNode {
     eol: input.eol ?? 'lf',
     engine: input.engine,
     readOnlyUser: input.readOnlyUser ?? false,
+    ...(input.asset ? { asset: input.asset } : {}),
   }
 }
 
@@ -99,6 +102,8 @@ export function toNode(open: OpenFile): FileNode {
     // 副本标记必须原样带回：写库时漏掉它，下一次写入就找不到自己那份副本，
     // 于是每轮都新建一个「（AI 副本）(1)(2)…」（D-19）
     ...(open.aiCopy ? { aiCopy: open.aiCopy } : {}),
+    // 资产标记同理：漏掉会让二进制文件在下次写库后退化成文本（P-08）
+    ...(open.asset ? { asset: open.asset } : {}),
   }
 }
 

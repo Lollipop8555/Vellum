@@ -320,6 +320,19 @@ export async function totalSize(): Promise<number> {
   return sum
 }
 
+/**
+ * 回收站体积：已删文件节点的 `size` 之和（W-11）。
+ *
+ * 与 `totalSize()` 同口径、同样只读元信息 —— 明细里的「回收站」要能一键清空，
+ * 先得让用户看见它到底占了多少。
+ */
+export async function trashSize(): Promise<number> {
+  const nodes = await listNodes()
+  let sum = 0
+  for (const n of nodes) if (n.kind === 'file' && n.deletedAt !== null) sum += n.size
+  return sum
+}
+
 export async function requestPersistence(): Promise<boolean> {
   if (!navigator.storage?.persist) return false
   if (await navigator.storage.persisted()) return true
