@@ -429,6 +429,21 @@ export class CodeMirrorAdapter implements EditorAdapter {
     this.view.focus()
   }
 
+  insertText(text: string, cursorOffset?: number): void {
+    const view = this.view
+    if (!view || this.opts?.readOnly) return
+    const sel = view.state.selection.main
+    const head = sel.from + Math.max(0, Math.min(cursorOffset ?? text.length, text.length))
+    view.dispatch({
+      changes: { from: sel.from, to: sel.to, insert: text },
+      selection: { anchor: head },
+      // 模板常常是好几行，插完得让人看见光标落在哪
+      effects: EditorView.scrollIntoView(head, { y: 'center' }),
+      userEvent: 'input.complete',
+    })
+    view.focus()
+  }
+
   openSearch(): void {
     this.opts?.onFind?.(false)
   }

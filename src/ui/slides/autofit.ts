@@ -43,7 +43,10 @@ export function fitPageContent(inner: HTMLElement): void {
   if (!blockW || !blockH) return
 
   let fit = Math.min(availW / blockW, availH / blockH)
-  if (blockH > availH * GROW_LIMIT) fit = Math.min(fit, 1)
+  // 图表不是文字：纵向流程图天然又窄又高，一上来就超过 GROW_LIMIT，
+  // 「别放大」的规则会让它缩在页中央一小条。整页以图为主时按可用区域铺满。
+  const diagramFirst = !!inner.querySelector('.mermaid-block, .graphviz-block, .plantuml-block')
+  if (!diagramFirst && blockH > availH * GROW_LIMIT) fit = Math.min(fit, 1)
   fit = Math.min(MAX_FIT, Math.max(MIN_FIT, fit))
   // 亚像素误差不值得写进变量：0.998 和 1 视觉上没差别
   fit = Math.round(fit * 1000) / 1000

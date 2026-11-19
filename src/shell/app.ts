@@ -7,6 +7,7 @@ import { renderDeckHtml, playerPlaceholder, type PlayerPage } from '../ui/slides
 import { deckTemplate, specCheck, specDetail, specMarkdown } from '../ui/slides/spec'
 import { destroyDeck, renderDeck } from '../ui/slides/view'
 import { activeIndex, extractOutline, type OutlineItem } from '../ui/outline'
+import { mdSyntaxGroups } from '../ui/md/syntax'
 import { isMarkdownLike, supportsDocView } from '../doc-views'
 import {
   activateBinding,
@@ -237,6 +238,28 @@ const outlineContent = createContent({
   className: 'outline-body',
   rootId: 'outlineBody',
   render: () => renderOutlineInto(outlineContent.root),
+})
+
+/**
+ * Markdown 语法速查：只读面板，唯一的交互是每条的「插入」。
+ * 内容不读 state.text，所以切文件、切语言都要重画（语言在 render 里现取）。
+ */
+const mdSyntaxContent = createContent({
+  id: 'mdsyntax',
+  titleKey: 'panel.mdSyntax',
+  className: 'md-syntax-body',
+  rootId: 'mdSyntaxBody',
+  render: () => renderMdSyntaxInto(mdSyntaxContent.root),
+})
+
+// 条目每次 render 都重建，只有根是稳定的 —— 委托挂在根上，不会重复绑
+mdSyntaxContent.root.addEventListener('click', (ev) => {
+  const btn = (ev.target as HTMLElement | null)?.closest<HTMLElement>('.md-syntax-insert')
+  if (!btn) return
+  const sample = btn.dataset.insert ?? ''
+  if (!sample) return
+  const raw = btn.dataset.cursor
+  state.editor?.insertText(sample, raw == null ? undefined : Number(raw))
 })
 
 const issuesContent = createContent({
@@ -1172,6 +1195,7 @@ function wireDrawer() {
   newMenuBtn.addEventListener('click', () =>
     newItemMenuDialog(newMenuBtn, {
       file: () => void createNode('file'),
+      markdown: () => newMarkdownDialog(),
       // 演示文稿 = 预填模板的文件：模板与语法速查、AI 说明同源（ui/slides/spec.ts）
       deck: () =>
         void createNode('file', targetParent(), {
@@ -1212,6 +1236,7 @@ function wireEditorHead() {
   el('formatBtn').addEventListener('click', () => void doFormat())
   el('findBtn').addEventListener('click', () => findBar?.open())
   el('moreBtn').addEventListener('click', (e) => openMoreMenu(e.currentTarget as HTMLElement))
+  el('emptyNewMdBtn').addEventListener('click', () => newMarkdownDialog())
   el('emptyPickBtn').addEventListener('click', () => void importFile())
   el('emptyPasteBtn').addEventListener('click', () => void importPasted())
   el('emptyUrlBtn').addEventListener('click', () => void importFromUrl())
@@ -2211,6 +2236,7 @@ function syncPanelButtons() {
   const map = Boolean(rec) && supportsDocView(lang, 'mindmap')
   const ppt = Boolean(rec) && supportsDocView(lang, 'ppt')
   el('previewBtn').hidden = !doc
+  el('mdSyntaxBtn').hidden = !doc
   el('outlineBtn').hidden = !rec
   el('issuesBtn').hidden = !rec
   el('mindmapBtn').hidden = !map
@@ -2218,7 +2244,11 @@ function syncPanelButtons() {
   // 当前这一页在当前文件上不适用时，面板不收起、转到大纲：
   // 切个文件就把侧栏闪没，比留着它更烦
   const active = activeContentId('right')
-  const stale = (active === 'preview' && !doc) || (active === 'mindmap' && !map) || (active === 'ppt' && !ppt)
+  const stale =
+    (active === 'preview' && !doc) ||
+    (active === 'mdsyntax' && !doc) ||
+    (active === 'mindmap' && !map) ||
+    (active === 'ppt' && !ppt)
   // 已经换过内容就别再走一遍末尾的刷新，否则同一个内容会被渲染两次
   if (stale && state.previewOpen) {
     void showContent('right', 'outline')
@@ -2247,6 +2277,7 @@ function registerPanelSlot() {
   })
   registerBinding({ trigger: 'aiBtn', slot: 'right', content: 'ai', toggle: true })
   registerBinding({ trigger: 'previewBtn', slot: 'right', content: 'preview', toggle: true })
+  registerBinding({ trigger: 'mdSyntaxBtn', slot: 'right', content: 'mdsyntax', toggle: true })
   registerBinding({ trigger: 'outlineBtn', slot: 'right', content: 'outline', toggle: true })
   registerBinding({ trigger: 'issuesBtn', slot: 'right', content: 'issues', toggle: true })
   registerBinding({ trigger: 'mindmapBtn', slot: 'right', content: 'mindmap', toggle: true })
@@ -3373,6 +3404,8 @@ interface CreatePreset {
   titleKey?: MessageKey
   /** 默认名前缀 */
   prefix?: string
+  /** 建完顺手展开右侧语法速查：「新建 Markdown 文档」专用 */
+  openSyntax?: boolean
 }
 
 /**
@@ -3462,7 +3495,19 @@ async function createNode(
   if (kind === 'file') await openRecord(node.id)
   // 抽屉收着就别白scroll：看不见的定位没有意义
   if (drawer.isOpen) revealNode(node.id)
+  if (preset.openSyntax) await activateBinding('mdSyntaxBtn', true)
   toast(t('toast.created', { name: node.name }))
+}
+
+/**
+ * 「新建 Markdown 文档」：首页与 + 菜单共用同一个入口。
+ *
+ * 只问名字、自动补 `.md`，不预填内容 —— 用户是想开始写，不想先删一遍模板。
+ * 后缀交给 `createNode` 的 preset，重名判断、语言识别都跟着走同一条路。
+ * 建完顺手把右侧语法速查展开：会来点这个按钮的人，多半还不熟语法。
+ */
+function newMarkdownDialog(parentId: string | null = targetParent()): void {
+  void createNode('file', parentId, { suffix: '.md', titleKey: 'action.newMarkdown', openSyntax: true })
 }
 
 async function commitRename(id: string, raw: string): Promise<boolean> {
@@ -4870,6 +4915,91 @@ function parseIgnoreWords(raw: string): string[] {
     if (word) seen.add(word)
   }
   return [...seen]
+}
+
+/* ------------------------------------------------------- Markdown 语法速查 */
+
+/**
+ * 速查面板：分组 → 条目（名字 / 范例 / 说明 / 插入）。
+ * 用 DOM 而不是 innerHTML 拼：范例里全是反引号和竖线，转义一次比渲染一次便宜。
+ */
+function renderMdSyntaxInto(host: HTMLElement) {
+  const frag = document.createDocumentFragment()
+
+  const hint = document.createElement('p')
+  hint.className = 'md-syntax-hint'
+  hint.textContent = t('mdSyntax.hint')
+  frag.append(hint)
+
+  for (const group of mdSyntaxGroups()) {
+    const section = document.createElement('section')
+    section.className = 'md-syntax-group'
+
+    const title = document.createElement('h3')
+    title.className = 'md-syntax-title'
+    title.textContent = group.title
+    section.append(title)
+
+    for (const item of group.items) {
+      const row = document.createElement('div')
+      row.className = 'md-syntax-item'
+
+      const head = document.createElement('div')
+      head.className = 'md-syntax-head'
+
+      const name = document.createElement('span')
+      name.className = 'md-syntax-name'
+      name.textContent = item.name
+
+      const insert = document.createElement('button')
+      insert.type = 'button'
+      insert.className = 'md-syntax-insert'
+      insert.textContent = t('mdSyntax.insert')
+      insert.title = t('mdSyntax.insertTitle')
+      insert.dataset.insert = item.sample
+      if (item.cursor != null) insert.dataset.cursor = String(item.cursor)
+
+      head.append(name, insert)
+
+      const sample = document.createElement('pre')
+      sample.className = 'md-syntax-sample'
+      sample.textContent = item.sample
+
+      const desc = document.createElement('p')
+      desc.className = 'md-syntax-desc'
+      desc.textContent = item.desc
+
+      row.append(head, sample, desc)
+
+      // 「规则」这一行专门放光看范例看不出来的部分：层级上限、列数怎么加、围栏怎么收尾
+      if (item.note) {
+        const note = document.createElement('p')
+        note.className = 'md-syntax-note'
+        const label = document.createElement('span')
+        label.className = 'md-syntax-note-label'
+        label.textContent = t('mdSyntax.note')
+        note.append(label, document.createTextNode(item.note))
+        row.append(note)
+      }
+
+      // 图表语言没法在这里讲全，直接给官方文档：新窗口打开，不打断当前编辑
+      if (item.link) {
+        const link = document.createElement('a')
+        link.className = 'md-syntax-link'
+        link.href = item.link.url
+        link.target = '_blank'
+        link.rel = 'noopener noreferrer'
+        link.textContent = item.link.label
+        row.append(link)
+      }
+
+      section.append(row)
+    }
+
+    frag.append(section)
+  }
+
+  host.replaceChildren(frag)
 }
 
 /* ---------------------------------------------------------------- 大纲 */

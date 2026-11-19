@@ -30,6 +30,7 @@ export const zh = {
   'action.copy': '复制',
   'action.new': '新建',
   'action.newFile': '新建文件',
+  'action.newMarkdown': '新建 Markdown 文档',
   'action.newDeck': '演示文稿',
   'action.newFolder': '新建文件夹',
   'action.rename': '重命名',
@@ -49,6 +50,7 @@ export const zh = {
   'rail.snapshots': '快照',
   'rail.preview': 'Markdown 预览',
   'rail.outline': '大纲（快速定位）',
+  'rail.mdSyntax': 'Markdown 语法速查',
   'rail.mindmap': '思维导图',
   'rail.ppt': '幻灯片',
   'rail.transforms': '文本加工',
@@ -97,10 +99,16 @@ export const zh = {
 
   'panel.preview': '预览',
   'panel.outline': '大纲',
+  'panel.mdSyntax': 'Markdown 语法',
   'panel.mindmap': '导图',
   'panel.ppt': '幻灯片',
   'panel.resize': '拖动调整宽度，双击还原',
   'panel.issues': '检查',
+
+  'mdSyntax.hint': '点「插入」把范例放到光标处，改文字就行。标题、列表、围栏这类要独占一行的，先把光标放到空行上。',
+  'mdSyntax.insert': '插入',
+  'mdSyntax.insertTitle': '在光标处插入这段语法',
+  'mdSyntax.note': '规则',
 
   'rail.issues': '代码检查',
 

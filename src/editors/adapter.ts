@@ -49,6 +49,11 @@ export interface EditorAdapter {
   /** 主题色取自 CSS 变量（如强调色开关），同名主题也要重读 */
   refreshTheme(): void
   goToLine(n: number): void
+  /**
+   * 在光标处插入文本（有选区就替换掉），光标落在插入内容里 `cursorOffset` 处（默认末尾），
+   * 随后把焦点还给编辑器。语法速查面板的「插入」按钮走这里。
+   */
+  insertText(text: string, cursorOffset?: number): void
   /** 语法检查结果。空数组即清空；判断"该不该报"不归适配器管 */
   setIssues(issues: RenderedIssue[]): void
   openSearch(): void

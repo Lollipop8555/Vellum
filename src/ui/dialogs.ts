@@ -257,6 +257,16 @@ const FILE_ICON =
   '<path d="M14.9 13.2v4M12.9 15.2h4" fill="none" stroke="currentColor" stroke-width="1.5" ' +
   'stroke-linecap="round"/></svg>'
 
+// Markdown：文件轮廓里几行正文，比通用的「文件+加号」更能看出是「写点什么」
+const MARKDOWN_ICON =
+  '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+  '<path d="M5.2 2.6h6.2l3.4 3.4v11.4H5.2z" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.3" stroke-linejoin="round"/>' +
+  '<path d="M11.4 2.8v3.2h3.2" fill="none" stroke="currentColor" stroke-width="1.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round"/>' +
+  '<path d="M7.4 9.2h5.2M7.4 12h3.4" fill="none" stroke="currentColor" stroke-width="1.2" ' +
+  'stroke-linecap="round"/></svg>'
+
 const FOLDER_ICON =
   '<svg viewBox="0 0 20 20" aria-hidden="true">' +
   '<path d="M2.4 6.4h3.8l1.2 1.5h3.2v4.2a1.1 1.1 0 0 1-1.1 1.1H3.5a1.1 1.1 0 0 1-1.1-1.1z" ' +
@@ -301,7 +311,14 @@ export function closeNewItemMenu() {
  */
 export function newItemMenuDialog(
   anchor: HTMLElement,
-  actions: { file(): void; deck(): void; folder(): void; paste(): void; url(): void },
+  actions: {
+    file(): void
+    markdown(): void
+    deck(): void
+    folder(): void
+    paste(): void
+    url(): void
+  },
 ) {
   if (popMenu?.anchor === anchor) {
     popMenu.close()
@@ -339,6 +356,7 @@ export function newItemMenuDialog(
   }
 
   add(t('action.newFile'), FILE_ICON, actions.file)
+  add(t('action.newMarkdown'), MARKDOWN_ICON, actions.markdown)
   add(t('action.newDeck'), DECK_ICON, actions.deck)
   add(t('action.newFolder'), FOLDER_ICON, actions.folder)
   add(t('action.clipboardImport'), CLIPBOARD_ICON, actions.paste)

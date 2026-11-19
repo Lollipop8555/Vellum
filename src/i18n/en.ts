@@ -32,6 +32,7 @@ export const en: Record<keyof typeof zh, string> = {
   'action.copy': 'Copy',
   'action.new': 'New',
   'action.newFile': 'New file',
+  'action.newMarkdown': 'New Markdown document',
   'action.newDeck': 'Deck',
   'action.newFolder': 'New folder',
   'action.rename': 'Rename',
@@ -51,6 +52,7 @@ export const en: Record<keyof typeof zh, string> = {
   'rail.snapshots': 'Snapshots',
   'rail.preview': 'Markdown preview',
   'rail.outline': 'Outline (jump around)',
+  'rail.mdSyntax': 'Markdown syntax reference',
   'rail.mindmap': 'Mindmap',
   'rail.ppt': 'Slides',
   'rail.transforms': 'Transform text',
@@ -98,10 +100,16 @@ export const en: Record<keyof typeof zh, string> = {
 
   'panel.preview': 'Preview',
   'panel.outline': 'Outline',
+  'panel.mdSyntax': 'Markdown syntax',
   'panel.mindmap': 'Mindmap',
   'panel.ppt': 'Slides',
   'panel.resize': 'Drag to resize, double-click to reset',
   'panel.issues': 'Checks',
+
+  'mdSyntax.hint': 'Hit “Insert” to drop the sample at the cursor, then edit the text. For headings, lists and fences, put the cursor on an empty line first.',
+  'mdSyntax.insert': 'Insert',
+  'mdSyntax.insertTitle': 'Insert this syntax at the cursor',
+  'mdSyntax.note': 'Rule',
 
   'rail.issues': 'Code checks',
 

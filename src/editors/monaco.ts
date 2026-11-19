@@ -332,6 +332,24 @@ export class MonacoAdapter implements EditorAdapter {
     this.editor.focus()
   }
 
+  insertText(text: string, cursorOffset?: number): void {
+    const editor = this.editor
+    const model = this.model
+    if (!editor || !model || this.opts?.readOnly) return
+    const selection = editor.getSelection()
+    if (!selection) return
+    const from = model.getOffsetAt(selection.getStartPosition())
+    // 不走 `suppress`：这次插入就是一次用户编辑，onChange 要跟着更新文档
+    editor.pushUndoStop()
+    editor.executeEdits('vellum-insert', [{ range: selection, text }])
+    editor.pushUndoStop()
+    const at = from + Math.max(0, Math.min(cursorOffset ?? text.length, text.length))
+    const position = model.getPositionAt(at)
+    editor.setPosition(position)
+    editor.revealPositionInCenterIfOutsideViewport(position)
+    editor.focus()
+  }
+
   setIssues(issues: RenderedIssue[]): void {
     const model = this.model
     if (!model) return

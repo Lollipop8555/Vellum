@@ -13,7 +13,7 @@
 import { toHtml } from 'hast-util-to-html'
 import type { INode, IPureNode } from 'markmap-common'
 import { Markmap } from 'markmap-view'
-import type { Content, Heading, List, ListItem, Root } from 'mdast'
+import type { Code, Content, Heading, List, ListItem, Root } from 'mdast'
 import remarkFrontmatter from 'remark-frontmatter'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -21,6 +21,7 @@ import remarkParse from 'remark-parse'
 import { unified } from 'unified'
 import { t } from '../i18n'
 import { download } from '../shell/save'
+import { lookupBlock } from './md/blocks'
 import { highlightToHast, isHighlightable } from './md/highlight'
 import { processor } from './md/pipeline'
 
@@ -147,6 +148,25 @@ function codeBody(lang: string, code: string): string {
   return html
 }
 
+/**
+ * 图表块的空壳（目前只有 mermaid，见下面的语言判断）。
+ *
+ * 复用预览的 renderer，所以 class 和 `data-*` 完全一致 —— 预览那套
+ * `renderMermaidBlocks(host)` 不用改就能在导图里找到这些块。
+ * 唯一的区别是去掉兜底的 `<pre>` 源码：节点只有 240px 宽，塞一段源码会把
+ * 整棵树撑歪，而且源码只在「图还没画出来」的时候才有意义，导图里不需要。
+ */
+function diagramShell(lang: string, code: string): string | null {
+  if (!code.trim()) return null
+  const renderer = lookupBlock(lang)
+  // 导图里只画 mermaid：graphviz 要额外拉 1.3MB 的 viz.js，plantuml 要联网。
+  // 别的图表语言还是老实显示源码 —— 空壳画不出来比一段代码更让人困惑。
+  if (!renderer?.langs.includes('mermaid')) return null
+  const element = renderer.render({ type: 'code', lang, value: code } as Code)
+  element.children = []
+  return toHtml({ type: 'root', children: [element] })
+}
+
 function codeHtml(node: Content, source: string): string {
   const start = node.position?.start.offset ?? 0
   const end = node.position?.end.offset ?? start
@@ -163,6 +183,9 @@ function codeHtml(node: Content, source: string): string {
   const head = lines.length
     ? `${lang || t('mindmap.code')} · ${t('mindmap.codeLines', { n: lines.length })}`
     : lang || t('mindmap.code')
+  // 图表语言画真图：空壳先占位，SVG 等 markmap 把节点挂上去之后再补（见 paintDiagrams）
+  const diagram = diagramShell(alias, lines.join('\n'))
+  if (diagram) return `<span class="mm2-block-head">${esc(head)}</span>${diagram}`
   return (
     `<span class="mm2-block-head">${esc(head)}</span>` +
     `<pre class="mm2-code${isHighlightable(alias) ? ' hljs' : ''}">${codeBody(alias, shown.join('\n'))}</pre>` +
@@ -473,15 +496,21 @@ export function renderMindmap(host: HTMLElement, source: string, options: Mindma
 
   void shell.markmap
     .setData(toTree(draft))
-    .then(() => {
+    .then(async () => {
       // setData 是带过渡的异步过程，等它落定 rect 才是新树的包围盒
       const live = shells.get(host)
       if (!live) return
+      // 图必须在 fit 之前画完：SVG 一进 foreignObject，节点尺寸就变了，
+      // 按「还没画」的尺寸去 fit，整棵树会被缩到角落里。
+      const painted = await paintDiagrams(host)
+      if (!shells.get(host)) return
       if (!firstView) {
         // 内容变了，「能看全的极限」跟着变；视野不动，只把缩放区间挪一下
+        if (painted) await nextLayout(live.markmap)
         applyScaleExtent(live.markmap)
         return
       }
+      if (painted) await nextLayout(live.markmap)
       try {
         void fitView(live.markmap)
       } catch {
@@ -491,6 +520,41 @@ export function renderMindmap(host: HTMLElement, source: string, options: Mindma
     .catch(() => {
       /* 渲染中途被销毁 */
     })
+}
+
+/**
+ * 等 markmap 重量完节点尺寸。
+ *
+ * 节点内容变高变矮，markmap 靠挂在内容上的 `ResizeObserver`（100ms 防抖）
+ * 触发 `renderData()` 重排。我们改完 DOM 就去 fit，量到的还是上一轮尺寸，
+ * 所以至少等过这个防抖窗口再加一帧。
+ */
+function nextLayout(markmap: Markmap): Promise<void> {
+  const node = markmap.svg.node()
+  return new Promise((resolve) => {
+    if (!node || !node.isConnected) return resolve()
+    setTimeout(() => requestAnimationFrame(() => resolve()), 140)
+  })
+}
+
+/**
+ * 把导图节点里的图表空壳画成 SVG；返回是否真的画过。
+ *
+ * mermaid 4MB，只在真出现图表块时才动态加载 —— 纯文字文档不该付这份钱。
+ * 同源码同主题不会重画（判断在 `renderMermaidBlocks` 里），所以打字触发的
+ * 每 350ms 全量 setData 不会被这里拖慢。
+ */
+async function paintDiagrams(host: HTMLElement): Promise<boolean> {
+  if (!host.querySelector('.mermaid-block')) return false
+  try {
+    const { renderMermaidBlocks } = await import('./mermaid')
+    if (!host.isConnected) return false
+    const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
+    await renderMermaidBlocks(host, theme)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
