@@ -409,3 +409,82 @@ export async function* streamChat(req: ChatRequest): AsyncGenerator<StreamEvent>
     }
   }
 }
+
+/* ------------------------------------------------------------------ 连通性探活 */
+
+export interface ProbeInput {
+  baseUrl: string
+  apiKey: string
+  model: string
+  timeoutMs?: number
+}
+
+export interface ProbeResult {
+  ok: boolean
+  /** 首个事件到达的耗时（毫秒） */
+  ms: number
+  code?: ErrorCode
+  message?: string
+  status?: number
+  /** 本地超时（区别于服务端直接连不上） */
+  timedOut?: boolean
+}
+
+const PROBE_TIMEOUT_MS = 15_000
+
+/**
+ * 一次最小请求的连通性验证（D-04 修订）。
+ *
+ * 走 `streamChat` 而不是 `GET /models`：后者通不代表这个 key 有 chat 权限，
+ * 而这里要回答的正是「现在发一句话到底能不能成」。`max_tokens: 16` 而不是 1
+ * —— 不少 provider 对 1 直接回 400。
+ *
+ * 只关心第一个有意义的事件：拿到文本、思维链或收尾即算通。
+ * 失败把 `code` 原样交给 UI 映射文案，不在这里拼中文（分层纪律）。
+ */
+export async function probe(input: ProbeInput): Promise<ProbeResult> {
+  const started = Date.now()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? PROBE_TIMEOUT_MS)
+  try {
+    for await (const event of streamChat({
+      baseUrl: input.baseUrl,
+      apiKey: input.apiKey,
+      model: input.model,
+      messages: [{ role: 'user', content: 'ping' }],
+      maxTokens: 16,
+      signal: controller.signal,
+    })) {
+      if (event.type === 'error') {
+        return {
+          ok: false,
+          ms: Date.now() - started,
+          code: event.code,
+          message: event.message,
+          status: event.status,
+        }
+      }
+      if (
+        event.type === 'text.delta' ||
+        event.type === 'reasoning.delta' ||
+        event.type === 'step.done'
+      ) {
+        return { ok: true, ms: Date.now() - started }
+      }
+    }
+    if (controller.signal.aborted) {
+      return { ok: false, ms: Date.now() - started, code: 'network', message: 'timeout', timedOut: true }
+    }
+    // 流干净收尾却没给内容：2xx 且能正常断开，仍算通
+    return { ok: true, ms: Date.now() - started }
+  } catch (error) {
+    return {
+      ok: false,
+      ms: Date.now() - started,
+      code: 'network',
+      message: (error as Error).message || 'probe failed',
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}

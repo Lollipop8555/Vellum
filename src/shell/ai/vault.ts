@@ -12,7 +12,7 @@
  *   不区分「密码错」和「数据坏」，避免把库结构当侧信道。
  */
 
-import { strToU8, zipSync } from 'fflate'
+import { deflateSync, inflateSync, strToU8, zipSync } from 'fflate'
 import { database, req } from './db'
 
 const DB_NAME = 'vellum-ai'
@@ -24,6 +24,61 @@ const DEFAULT_ITER = 600_000
 const SALT_BYTES = 16
 const IV_BYTES = 12
 const ENVELOPE_VERSION = 1
+
+/* ------------------------------------------------------------- 口令格式 */
+
+/**
+ * 「口令」= 一段自带密文的可粘贴文本，用来把一套配置搬到另一个浏览器。
+ *
+ * 它**不是**本地信封的复制品（D-47）：本地信封的 AAD 绑 `id:rev`，跨设备毫无意义；
+ * 而口令的明文只有三个元素（端点 / 密钥 / 模型清单），没有 id、没有名字、没有时间戳。
+ * 所以走一条独立编码：裸排列 → deflate → AES-GCM → base64url。
+ *
+ * 布局（blob）：
+ * ```
+ * 0        verFlags  u8    高 4 位版本，低 4 位 flags（bit0 = 已 deflate）
+ * 1        iterCode  u8    总迭代次数档位（见 TOKEN_ITERS）
+ * 2..17    salt      16B
+ * 18..29   iv        12B
+ * 30..     cipher          AES-GCM(deflate(payload))，含 16B tag
+ * 末 2B     crc16           覆盖前面全部字节
+ * ```
+ * AAD = 前 30 字节。零体积成本，但能挡住「把 iterCode 改成最低档再爆破」。
+ *
+ * payload（加密前的明文）：
+ * ```
+ * 0        scheme   u8  bit0: 0=https 1=http；bit1: 1=URL 原样未剥离协议
+ * 1        urlLen   u8
+ * 2..      url      utf8（已剥离 `https://` / `http://`，省 8 字节）
+ * ..       keyLen   u8
+ * ..       key      utf8
+ * ..       count    u8
+ * ..       (len u8 + model utf8) × count
+ * ..       modelIdx u8
+ * ```
+ * 没有分隔符：每段前面先写长度，读的时候按长度取。所有长度前缀都是 1 字节，
+ * 因此单字段上限 255 —— 超出直接报 `bad_token`，不做变长编码。
+ */
+const TOKEN_PREFIX = 'VELLUM-AI-2.'
+const TOKEN_VERSION = 2
+const TOKEN_HEAD_BYTES = 30
+const TOKEN_TAG_BYTES = 16
+const TOKEN_CRC_BYTES = 2
+const TOKEN_MIN_BYTES = TOKEN_HEAD_BYTES + TOKEN_TAG_BYTES + TOKEN_CRC_BYTES
+/** 单行容量上限（经典 PEM 宽度）；实际每行按总长均分，见 `wrapToken` */
+const TOKEN_WRAP = 76
+const TOKEN_FLAG_DEFLATE = 0b0001
+const TOKEN_SCHEME_HTTP = 0b0001
+const TOKEN_SCHEME_RAW = 0b0010
+const TOKEN_MAX_FIELD = 0xff
+
+/**
+ * 口令的 KDF 比本地信封更贵（D-47）：它会被转发到微信、网盘、密码管理器，
+ * 离线爆破的暴露面明显更大，而导入/导出是低频动作，多 0.4s 换一档强度划算。
+ * `iterCode` 写在 blob 里，以后调高不会让老口令失效。
+ */
+const TOKEN_ITERS = [600_000, 1_000_000, 1_500_000, 2_000_000] as const
+const TOKEN_ITER_DEFAULT = 1
 
 /* ------------------------------------------------------------------ 类型 */
 
@@ -88,6 +143,8 @@ export type VaultErrorCode =
   | 'empty_name'
   | 'bad_config'
   | 'unlock_failed'
+  /** 口令外层不成立：前缀不认识、base64 坏掉、crc 对不上（与「密码错」分开） */
+  | 'bad_token'
   | 'locked'
   | 'not_found'
   | 'io'
@@ -209,6 +266,237 @@ async function openSealed(
   )
   const parsed = JSON.parse(text(plain)) as unknown
   return { config: normalizeConfig(parsed), key }
+}
+
+/* ------------------------------------------------------------------ 口令编解码 */
+
+/** CRC-16/CCITT-FALSE：只用来区分「口令复制坏了」和「密码错了」，不承担安全职责 */
+function crc16(data: Uint8Array): number {
+  let crc = 0xffff
+  for (let i = 0; i < data.length; i += 1) {
+    crc ^= data[i] << 8
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff
+    }
+  }
+  return crc
+}
+
+/** base64url（去 padding）：`+` 在 query 里会被当空格，`/` 在聊天软件里会被断行 */
+function toTokenB64(data: Uint8Array): string {
+  return toB64(data).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function fromTokenB64(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const pad = normalized.length % 4
+  return fromB64(pad ? normalized + '='.repeat(4 - pad) : normalized)
+}
+
+function pushField(out: number[], value: string): void {
+  const raw = bytes(value)
+  if (!raw.length || raw.length > TOKEN_MAX_FIELD) throw new VaultError('bad_config')
+  out.push(raw.length)
+  for (const byte of raw) out.push(byte)
+}
+
+function packTokenPayload(config: ProfileConfig): Uint8Array {
+  // 协议几乎总是 https：剥掉能省 8 字节，不认识的写法原样存并置 bit1
+  const url = config.baseUrl
+  const isHttp = url.startsWith('http://')
+  const rest = isHttp ? url.slice(7) : url.startsWith('https://') ? url.slice(8) : url
+  let scheme = isHttp ? TOKEN_SCHEME_HTTP : 0
+  if (rest === url) scheme |= TOKEN_SCHEME_RAW
+
+  const out: number[] = [scheme]
+  pushField(out, rest)
+  pushField(out, config.apiKey)
+  if (config.models.length > TOKEN_MAX_FIELD) throw new VaultError('bad_config')
+  out.push(config.models.length)
+  for (const model of config.models) pushField(out, model)
+  const index = config.models.indexOf(config.model)
+  out.push(index < 0 ? 0 : index)
+  return new Uint8Array(out)
+}
+
+function unpackTokenPayload(data: Uint8Array): ProfileConfig {
+  let at = 0
+  const readByte = (): number => {
+    if (at >= data.length) throw new VaultError('bad_token')
+    return data[at++]
+  }
+  const readField = (): string => {
+    const length = readByte()
+    if (!length || at + length > data.length) throw new VaultError('bad_token')
+    const value = text(data.subarray(at, at + length))
+    at += length
+    return value
+  }
+
+  const scheme = readByte()
+  const rest = readField()
+  const apiKey = readField()
+  const count = readByte()
+  const models: string[] = []
+  for (let i = 0; i < count; i += 1) models.push(readField())
+  const index = readByte()
+
+  const raw = scheme & TOKEN_SCHEME_RAW
+  const prefix = raw ? '' : scheme & TOKEN_SCHEME_HTTP ? 'http://' : 'https://'
+  return normalizeConfig({
+    baseUrl: prefix + rest,
+    apiKey,
+    models,
+    model: models[index] ?? models[0],
+  })
+}
+
+/**
+ * 折行，**均分**而不是按 76 硬截。
+ *
+ * 硬截的毛病是末行长度完全看运气：总长 182 时是 76/76/30，末行只剩 30 个字符，
+ * 看着像被截断；补装饰又会在密文里掺进非 base64 字符，出戏且要额外的剥离规则。
+ *
+ * 均分不引入任何新字符：行数仍按 76 的容量算（所以单行不会超过 76），
+ * 再把这个总长平均摊到各行。同一个例子会变成 61/61/60 —— 三行几乎等长，
+ * 整块看上去就是一个规规矩矩的密文块，粘贴出去也不会有多出来的符号。
+ */
+function wrapToken(flat: string): string {
+  if (!flat) return ''
+  const lines = Math.max(1, Math.ceil(flat.length / TOKEN_WRAP))
+  const width = Math.ceil(flat.length / lines)
+  const out: string[] = []
+  for (let i = 0; i < flat.length; i += width) out.push(flat.slice(i, i + width))
+  return out.join('\n')
+}
+
+export interface TokenResult {
+  token: string
+  /** 去掉换行后的字符数，UI 用来提示「复制了多长一段」 */
+  chars: number
+}
+
+/**
+ * 导出口令（D-47）。**必须先验证密码**：加密本身不挑密码，任何字符串都能「加密成功」，
+ * 不验就会生成一段谁也打不开的文本。所以这里多一次 PBKDF2（约 0.4s）。
+ */
+export async function exportToken(id: string, password: string): Promise<TokenResult> {
+  requireCrypto()
+  if (!password) throw new VaultError('empty_password')
+  const rec = await getProfile(id)
+  if (!rec) throw new VaultError('not_found')
+
+  let config: ProfileConfig
+  try {
+    config = (await openSealed(rec.env, password)).config
+  } catch {
+    throw new VaultError('unlock_failed')
+  }
+
+  const payload = packTokenPayload(config)
+  const packed = deflateSync(payload, { level: 9 })
+  const useDeflate = packed.length < payload.length
+
+  const iterCode = TOKEN_ITER_DEFAULT
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES))
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES))
+
+  const head = new Uint8Array(TOKEN_HEAD_BYTES)
+  head[0] = (TOKEN_VERSION << 4) | (useDeflate ? TOKEN_FLAG_DEFLATE : 0)
+  head[1] = iterCode
+  head.set(salt, 2)
+  head.set(iv, 2 + SALT_BYTES)
+
+  const key = await deriveKey(password, salt, TOKEN_ITERS[iterCode])
+  const cipher = new Uint8Array(
+    await crypto.subtle.encrypt(
+      {
+        name: 'AES-GCM',
+        iv: iv as unknown as BufferSource,
+        additionalData: head as unknown as BufferSource,
+      },
+      key,
+      (useDeflate ? packed : payload) as unknown as BufferSource,
+    ),
+  )
+
+  const blob = new Uint8Array(TOKEN_HEAD_BYTES + cipher.length + TOKEN_CRC_BYTES)
+  blob.set(head, 0)
+  blob.set(cipher, TOKEN_HEAD_BYTES)
+  const crc = crc16(blob.subarray(0, blob.length - TOKEN_CRC_BYTES))
+  blob[blob.length - 2] = crc >> 8
+  blob[blob.length - 1] = crc & 0xff
+
+  const flat = TOKEN_PREFIX + toTokenB64(blob)
+  return { token: wrapToken(flat), chars: flat.length }
+}
+
+/**
+ * 导入口令：解出明文，**不落库**。落库由调用方在测试通过后自己调 `createProfile`
+ * —— 口令的 id / 名字都没有意义，导入必然是「新记录 + 重封装」。
+ *
+ * 失败分两种，因为用户该做的事不同：
+ * - `bad_token`：前缀、base64、crc 不成立 → 重新复制；
+ * - `unlock_failed`：密码错或密文被改 → 核对密码（沿用 D-03，不区分两者）。
+ */
+export async function importToken(token: string, password: string): Promise<ProfileConfig> {
+  requireCrypto()
+  if (!password) throw new VaultError('empty_password')
+  const flat = token.replace(/\s+/g, '')
+  const at = flat.indexOf(TOKEN_PREFIX)
+  if (at < 0) throw new VaultError('bad_token')
+  // 只吃 base64url 字符：从聊天记录里一起复制过来的前后文字在这截掉
+  const body = flat.slice(at + TOKEN_PREFIX.length)
+  const end = body.search(/[^A-Za-z0-9_-]/)
+  const core = end < 0 ? body : body.slice(0, end)
+
+  let blob: Uint8Array
+  try {
+    blob = fromTokenB64(core)
+  } catch {
+    throw new VaultError('bad_token')
+  }
+  if (blob.length < TOKEN_MIN_BYTES) throw new VaultError('bad_token')
+
+  const crcAt = blob.length - TOKEN_CRC_BYTES
+  const expected = (blob[crcAt] << 8) | blob[crcAt + 1]
+  if (crc16(blob.subarray(0, crcAt)) !== expected) throw new VaultError('bad_token')
+
+  const verFlags = blob[0]
+  if (verFlags >> 4 !== TOKEN_VERSION) throw new VaultError('bad_token')
+  const iter = TOKEN_ITERS[blob[1]]
+  if (!iter) throw new VaultError('bad_token')
+
+  const head = blob.subarray(0, TOKEN_HEAD_BYTES)
+  const salt = blob.slice(2, 2 + SALT_BYTES)
+  const iv = blob.slice(2 + SALT_BYTES, TOKEN_HEAD_BYTES)
+  const key = await deriveKey(password, salt, iter)
+
+  let plain: ArrayBuffer
+  try {
+    plain = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: iv as unknown as BufferSource,
+        additionalData: head as unknown as BufferSource,
+      },
+      key,
+      blob.subarray(TOKEN_HEAD_BYTES, crcAt) as unknown as BufferSource,
+    )
+  } catch {
+    throw new VaultError('unlock_failed')
+  }
+
+  const raw = new Uint8Array(plain)
+  let payload = raw
+  if (verFlags & TOKEN_FLAG_DEFLATE) {
+    try {
+      payload = inflateSync(raw)
+    } catch {
+      throw new VaultError('bad_token')
+    }
+  }
+  return unpackTokenPayload(payload)
 }
 
 function strList(value: unknown): string[] {

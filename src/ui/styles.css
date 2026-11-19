@@ -4102,10 +4102,29 @@ textarea.raw {
 
 .ai-foot {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 2px;
   padding-top: 8px;
   border-top: 1px solid var(--c-border-soft);
+}
+
+/* 口令弹窗：窄面板下按钮要能换行，口令本体要能整块选中 */
+.ai-token-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ai-token-text {
+  max-height: 34vh;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
 }
 
 .ai-foot.is-busy {

@@ -282,6 +282,39 @@ export const en: Record<keyof typeof zh, string> = {
   'ai.err.http': 'The endpoint returned an error ({status})',
   'ai.err.stream': 'The response is not a valid event stream',
   'ai.err.aborted': 'Stopped',
+  'ai.err.badToken': 'The token is incomplete — part of it was lost while copying. Copy it again',
+  'ai.err.timeout': 'Request timed out (no response in 15s)',
+
+  'ai.action.pasteToken': 'Paste token',
+  'ai.action.copyToken': 'Copy token',
+  'ai.action.test': 'Test connection',
+  'ai.test.running': 'Connecting…',
+  'ai.test.ok': 'Connected ({ms}ms)',
+  'ai.test.fail': '{model} failed: {reason}',
+  'ai.token.exportTitle': 'Token: {name}',
+  'ai.token.exportHint':
+    'The token carries only the encrypted config; your password is never written into it. Enter your password once to confirm, then generate.',
+  'ai.token.generate': 'Generate token',
+  'ai.token.working': 'Working… (about a second)',
+  'ai.token.warn':
+    'This text is equivalent to your key. Send it to yourself only — never to a group, an issue, or a public note.',
+  'ai.token.copied': 'Copied {chars} characters. Do not share it with anyone',
+  'ai.token.copyFailed': 'The browser blocked clipboard access — the text is selected, copy it manually',
+  'ai.token.importTitle': 'Paste token',
+  'ai.token.importHint':
+    'Paste the whole token from another device (line breaks and spaces are ignored), then enter the password you set there.',
+  'ai.token.paste': 'Token',
+  'ai.token.pasteHint': 'VELLUM-AI-2.…',
+  'ai.token.passwordNote':
+    'Unlocks this token, and becomes the password of the imported config',
+  'ai.token.decrypt': 'Decrypt',
+  'ai.token.previewHint':
+    'Decrypted {n} models. You can change the endpoint — a different network usually needs a different one.',
+  'ai.token.baseUrlNote': 'Both testing and saving use the address in this field',
+  'ai.token.nameHint': 'What to call it after importing',
+  'ai.token.defaultName': 'Imported config',
+  'ai.token.testAndImport': 'Test and import',
+  'ai.notice.imported': 'Imported "{name}"',
 
   'issues.optionsTip': 'Choose what to check',
   'issues.options': 'Checks',

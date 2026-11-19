@@ -4,8 +4,10 @@ import {
   createProfile,
   deleteProfile,
   exportBackup,
+  exportToken,
   getConfig,
   hasCrypto,
+  importToken,
   isUnlocked,
   listProfiles,
   lock,
@@ -18,11 +20,12 @@ import {
   type ProfileConfig,
   type ProfileRecord,
 } from '../shell/ai/vault'
+import { probe, type ProbeResult } from '../shell/ai/transport'
 import type { DocHost } from '../shell/ai/tools'
 import { formatBytes } from '../shell/largefile'
 import { downloadBlob } from '../shell/save'
 import { createChatView, type ChatTarget, type ChatView } from './ai/chat'
-import { confirmDialog, openDialog } from './dialogs'
+import { confirmDialog, openDialog, type DialogHandle } from './dialogs'
 
 /**
  * AI 面板 = 凭据区（P1）+ 会话区（P3）。
@@ -265,6 +268,86 @@ function maskKey(key: string): string {
   return key.length > 12 ? `${key.slice(0, 4)}…${key.slice(-4)}` : '…'
 }
 
+const COPY_SVG =
+  '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">' +
+  '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+  '<path d="M10.5 3.5v-.7a1.3 1.3 0 0 0-1.3-1.3H3.8a1.3 1.3 0 0 0-1.3 1.3v5.4a1.3 1.3 0 0 0 1.3 1.3h.7" ' +
+  'fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
+
+/**
+ * icon-only 按钮。面板最窄 280px，行上已经有「启用 / 编辑」，再塞一个四字按钮
+ * 会把配置名挤成省略号 —— 而名字是未启用时唯一的识别信息（D-40）。
+ */
+function iconButton(
+  cls: string,
+  label: string,
+  svg: string,
+  onClick?: () => void,
+): HTMLButtonElement {
+  const node = document.createElement('button')
+  node.type = 'button'
+  node.className = `btn btn-ghost ai-icon ${cls}`
+  node.title = label
+  node.setAttribute('aria-label', label)
+  // 常量 SVG，不含任何用户数据
+  node.innerHTML = svg
+  if (onClick) node.onclick = onClick
+  return node
+}
+
+/** probe 的错误码 → 现成文案；不在这里发明新说法 */
+function probeReason(result: ProbeResult): string {
+  if (result.timedOut) return t('ai.err.timeout')
+  switch (result.code) {
+    case 'auth':
+      return t('ai.err.auth')
+    case 'not_found':
+      return t('ai.err.http404')
+    case 'rate_limit':
+      return t('ai.err.rateLimit')
+    case 'network':
+      return t('ai.err.network')
+    case 'http':
+      return t('ai.err.http', { status: result.status ?? 0 })
+    default:
+      return t('ai.err.stream')
+  }
+}
+
+/**
+ * 发一次最小请求并把结果落到一行内联状态里。
+ *
+ * 测的永远是**传进来的那一份 config**：新建是表单值，编辑是表单值（含未保存改动），
+ * 导入是刚解出来的那一份。所以不存在「为了测一次要解锁全部配置」。
+ */
+async function runProbe(
+  config: ProfileConfig,
+  status: HTMLElement,
+  model = config.model,
+): Promise<boolean> {
+  status.hidden = false
+  status.className = 'ai-alert'
+  status.textContent = t('ai.test.running')
+  const result = await probe({ baseUrl: config.baseUrl, apiKey: config.apiKey, model })
+  if (result.ok) {
+    status.className = 'ai-alert is-ok'
+    status.textContent = t('ai.test.ok', { ms: result.ms })
+    return true
+  }
+  status.className = 'ai-alert is-err'
+  status.textContent = t('ai.test.fail', { model, reason: probeReason(result) })
+  return false
+}
+
+/** 口令里没有名字（只装三个元素），导入时用域名当默认名，用户可改 */
+function nameFromUrl(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname || t('ai.token.defaultName')
+  } catch {
+    return t('ai.token.defaultName')
+  }
+}
+
 function errorText(err: unknown): MessageKey {
   if (!(err instanceof VaultError)) return 'ai.err.io'
   switch (err.code) {
@@ -278,6 +361,8 @@ function errorText(err: unknown): MessageKey {
       return 'ai.err.incomplete'
     case 'unlock_failed':
       return 'ai.err.unlockFailed'
+    case 'bad_token':
+      return 'ai.err.badToken'
     case 'not_found':
       return 'ai.err.notFound'
     case 'locked':
@@ -340,6 +425,7 @@ function draw(): void {
     const foot = div('ai-foot')
     foot.append(
       button('ai.action.new', 'btn btn-primary', startCreate),
+      button('ai.action.pasteToken', 'btn btn-ghost', openImportDialog),
       button('ai.action.backup', 'btn btn-ghost', () => void doBackup()),
     )
     if (loading) foot.classList.add('is-busy')
@@ -537,6 +623,12 @@ function listSection(): HTMLElement {
         }),
       )
     }
+    // 复制口令不需要先解锁：它是密文的重编码，不含明文 key，只要求重新输密码（D-47）
+    actions.append(
+      iconButton('ai-row-copy', t('ai.action.copyToken'), COPY_SVG, () => {
+        openExportDialog(rec)
+      }),
+    )
     // 删除不在这里：它藏在「编辑」里，先验证密码再删（D-42）
     actions.append(
       button('ai.action.edit', 'btn btn-ghost', () => {
@@ -576,8 +668,22 @@ function createForm(): HTMLElement {
 
   const err = div('ai-alert is-err')
   err.hidden = true
-  box.append(err)
+  const status = div('ai-alert')
+  status.hidden = true
+  box.append(err, status)
 
+  /** 表单当前值 → config。测试和创建都用它，保证「测的」和「存的」是同一份 */
+  const snapshot = (): ProfileConfig => {
+    const list = lines(models.value)
+    return {
+      baseUrl: baseUrl.value.trim(),
+      apiKey: apiKey.value.trim(),
+      models: list,
+      model: list[0] ?? '',
+    }
+  }
+
+  let busy = false
   const foot = div('ai-actions')
   foot.append(
     button('action.cancel', 'btn btn-ghost', () => {
@@ -585,29 +691,47 @@ function createForm(): HTMLElement {
       view.error = ''
       draw()
     }),
+    button('ai.action.test', 'btn btn-ghost', () => {
+      void (async () => {
+        if (busy) return
+        const config = snapshot()
+        if (!config.baseUrl || !config.apiKey || !config.models.length) {
+          err.textContent = t('ai.err.incomplete')
+          err.hidden = false
+          return
+        }
+        err.hidden = true
+        busy = true
+        try {
+          await runProbe(config, status)
+        } finally {
+          busy = false
+        }
+      })()
+    }),
     button('ai.action.create', 'btn btn-primary', () => {
       void (async () => {
-        const list = lines(models.value)
-        const config: ProfileConfig = {
-          baseUrl: baseUrl.value.trim(),
-          apiKey: apiKey.value.trim(),
-          models: list,
-          model: list[0] ?? '',
-        }
+        if (busy) return
+        const config = snapshot()
+        const wanted = name.value.trim()
         // 名称先查：它是未启用时唯一的识别信息，空着建出来的配置等于没法选
-        if (!name.value.trim()) {
+        if (!wanted) {
           err.textContent = t('ai.err.emptyName')
           err.hidden = false
           name.focus()
           return
         }
-        if (!config.baseUrl || !config.apiKey || !list.length) {
+        if (!config.baseUrl || !config.apiKey || !config.models.length) {
           err.textContent = t('ai.err.incomplete')
           err.hidden = false
           return
         }
+        err.hidden = true
+        busy = true
         try {
-          const rec = await createProfile(name.value, password.value, config)
+          // 先测再存（D-04 修订）：连不上的配置落库只会变成列表里的垃圾
+          if (!(await runProbe(config, status))) return
+          const rec = await createProfile(wanted, password.value, config)
           await unlock(rec.id, password.value)
           // 建完直接解锁 + 进对话页：少一次「刚建完又要输密码」，也少一次「建完不知道去哪」
           managing = false
@@ -617,6 +741,8 @@ function createForm(): HTMLElement {
         } catch (e) {
           err.textContent = t(errorText(e))
           err.hidden = false
+        } finally {
+          busy = false
         }
       })()
     }),
@@ -660,8 +786,22 @@ function editForm(rec: ProfileRecord, config: ProfileConfig): HTMLElement {
 
   const err = div('ai-alert is-err')
   err.hidden = true
-  box.append(err)
+  const status = div('ai-alert')
+  status.hidden = true
+  box.append(err, status)
 
+  /** 表单当前值（key 留空则沿用旧 key）——测的必须是用户填的那一份，不是已存的 */
+  const draft = (): ProfileConfig => {
+    const list = lines(models.value)
+    return {
+      baseUrl: baseUrl.value.trim(),
+      apiKey: apiKey.value.trim() || config.apiKey,
+      models: list,
+      model: list.includes(config.model) ? config.model : list[0],
+    }
+  }
+
+  let busy = false
   const foot = div('ai-actions')
   foot.append(
     button('action.cancel', 'btn btn-ghost', () => {
@@ -672,6 +812,25 @@ function editForm(rec: ProfileRecord, config: ProfileConfig): HTMLElement {
     }),
     // 删除只在这里出现：验过密码 + 再过一次确认，才是「本人主动删」
     button('ai.action.delete', 'btn btn-ghost is-danger', () => void doDelete(rec)),
+    // 测试紧挨着保存：用户改完端点后想知道的正是「我填的这个通不通」
+    button('ai.action.test', 'btn btn-ghost', () => {
+      void (async () => {
+        if (busy) return
+        const next = draft()
+        if (!next.baseUrl || !next.models.length) {
+          err.textContent = t('ai.err.incomplete')
+          err.hidden = false
+          return
+        }
+        err.hidden = true
+        busy = true
+        try {
+          await runProbe(next, status)
+        } finally {
+          busy = false
+        }
+      })()
+    }),
     button('ai.action.save', 'btn btn-primary', () => {
       void (async () => {
         const list = lines(models.value)
@@ -711,6 +870,249 @@ function editForm(rec: ProfileRecord, config: ProfileConfig): HTMLElement {
   )
   box.append(foot)
   return box
+}
+
+/** 非安全上下文下 navigator.clipboard 可能不存在；失败时由调用方降级为「选中文本」 */
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function selectNode(node: Node): void {
+  const range = document.createRange()
+  range.selectNodeContents(node)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+/**
+ * 「复制口令」（D-47）。
+ *
+ * 先验密码不是多余的仪式：AES-GCM 不挑密码，任何字符串都能「加密成功」，
+ * 不验就会生成一段谁也打不开的文本。所以这里比导入多花一次 PBKDF2（约 0.4s）。
+ */
+function openExportDialog(rec: ProfileRecord): void {
+  const body = div('ai-token-box')
+
+  const askStep = (): void => {
+    body.textContent = ''
+    body.append(div('ai-hint', t('ai.token.exportHint')))
+    const password = input('password', '', 'ai.field.passwordAsk')
+    password.autocomplete = 'current-password'
+    const status = div('ai-alert')
+    status.hidden = true
+    const go = button('ai.token.generate', 'btn btn-primary')
+    const row = div('ai-actions')
+    row.append(go)
+    body.append(field('ai.field.password', null, password), status, row)
+
+    go.onclick = () => {
+      void (async () => {
+        if (go.disabled) return
+        go.disabled = true
+        // 口令用 1M 次 PBKDF2，加上前面的验证，这一下大约 1 秒；不给反馈就像卡死
+        status.className = 'ai-alert'
+        status.textContent = t('ai.token.working')
+        status.hidden = false
+        try {
+          const result = await exportToken(rec.id, password.value)
+          showStep(result.token, result.chars)
+        } catch (e) {
+          status.className = 'ai-alert is-err'
+          status.textContent = t(errorText(e))
+          status.hidden = false
+          password.select()
+        } finally {
+          go.disabled = false
+        }
+      })()
+    }
+    password.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        go.click()
+      }
+    })
+    queueMicrotask(() => password.focus())
+  }
+
+  const showStep = (token: string, chars: number): void => {
+    body.textContent = ''
+    body.append(div('ai-hint', t('ai.token.warn')))
+    const pre = document.createElement('pre')
+    pre.className = 'ai-plain ai-token-text'
+    pre.textContent = token
+    const status = div('ai-alert')
+    status.hidden = true
+    const copy = button('ai.action.copyToken', 'btn btn-primary')
+    copy.onclick = () => {
+      void (async () => {
+        status.hidden = false
+        if (await copyText(token)) {
+          status.className = 'ai-alert is-ok'
+          status.textContent = t('ai.token.copied', { chars })
+          return
+        }
+        status.className = 'ai-alert is-err'
+        status.textContent = t('ai.token.copyFailed')
+        selectNode(pre)
+      })()
+    }
+    const row = div('ai-actions')
+    row.append(copy)
+    body.append(pre, status, row)
+  }
+
+  askStep()
+  openDialog({ title: t('ai.token.exportTitle', { name: rec.name }), body })
+}
+
+/**
+ * 「粘贴口令」（D-04 修订 + D-47）。
+ *
+ * 三步：解口令 → 解出来的配置**可编辑**（跨网络的端点常常必须改）→ 测试通过才落库。
+ * 任何一步失败都不写库：库里不该出现「打不开」或「根本连不上」的配置。
+ */
+function openImportDialog(): void {
+  managing = true
+  const body = div('ai-token-box')
+  // 口令密码同时是这条新记录的密码：用户刚输过，不再问第二次
+  let secret = ''
+  let handle: DialogHandle | null = null
+  const close = (): void => handle?.close()
+
+  const pasteStep = (): void => {
+    body.textContent = ''
+    body.append(div('ai-hint', t('ai.token.importHint')))
+    const token = textarea('ai.token.pasteHint')
+    token.rows = 5
+    token.spellcheck = false
+    const password = input('password', '', 'ai.field.passwordAsk')
+    password.autocomplete = 'current-password'
+    const status = div('ai-alert')
+    status.hidden = true
+    const go = button('ai.token.decrypt', 'btn btn-primary')
+    const row = div('ai-actions')
+    row.append(button('action.cancel', 'btn btn-ghost', close), go)
+    body.append(
+      field('ai.token.paste', null, token),
+      field('ai.field.password', 'ai.token.passwordNote', password),
+      status,
+      row,
+    )
+
+    go.onclick = () => {
+      void (async () => {
+        if (go.disabled) return
+        go.disabled = true
+        status.className = 'ai-alert'
+        status.textContent = t('ai.token.working')
+        status.hidden = false
+        try {
+          const config = await importToken(token.value, password.value)
+          secret = password.value
+          previewStep(config)
+        } catch (e) {
+          status.className = 'ai-alert is-err'
+          status.textContent = t(errorText(e))
+          status.hidden = false
+        } finally {
+          go.disabled = false
+        }
+      })()
+    }
+    queueMicrotask(() => token.focus())
+  }
+
+  const previewStep = (config: ProfileConfig): void => {
+    body.textContent = ''
+    body.append(div('ai-hint', t('ai.token.previewHint', { n: config.models.length })))
+    const name = input('text')
+    name.value = nameFromUrl(config.baseUrl)
+    const baseUrl = input('url')
+    baseUrl.value = config.baseUrl
+    const models = textarea('ai.field.modelsNote')
+    models.value = config.models.join('\n')
+    const err = div('ai-alert is-err')
+    err.hidden = true
+    const status = div('ai-alert')
+    status.hidden = true
+    body.append(
+      field('ai.field.name', 'ai.field.nameNote', name),
+      field('ai.field.baseUrl', 'ai.token.baseUrlNote', baseUrl),
+      field('ai.field.models', 'ai.field.modelsNote', models),
+      err,
+      status,
+    )
+
+    let busy = false
+    const go = button('ai.token.testAndImport', 'btn btn-primary')
+    const row = div('ai-actions')
+    row.append(button('action.cancel', 'btn btn-ghost', close), go)
+    body.append(row)
+
+    go.onclick = () => {
+      void (async () => {
+        if (busy) return
+        const list = lines(models.value)
+        const wanted = name.value.trim()
+        if (!wanted) {
+          err.textContent = t('ai.err.emptyName')
+          err.hidden = false
+          name.focus()
+          return
+        }
+        if (!baseUrl.value.trim() || !list.length) {
+          err.textContent = t('ai.err.incomplete')
+          err.hidden = false
+          return
+        }
+        err.hidden = true
+        busy = true
+        go.disabled = true
+        try {
+          const next: ProfileConfig = {
+            baseUrl: baseUrl.value.trim(),
+            apiKey: config.apiKey,
+            models: list,
+            model: list.includes(config.model) ? config.model : list[0],
+          }
+          // 先测再存：加密成功只证明密码对，证明不了这台机器现在连得上
+          if (!(await runProbe(next, status, next.model))) return
+          const rec = await createProfile(wanted, secret, next)
+          await unlock(rec.id, secret)
+          managing = false
+          view.mode = 'list'
+          view.error = ''
+          view.notice = t('ai.notice.imported', { name: wanted })
+          await reload()
+          close()
+        } catch (e) {
+          err.textContent = t(errorText(e))
+          err.hidden = false
+        } finally {
+          busy = false
+          go.disabled = false
+        }
+      })()
+    }
+  }
+
+  handle = openDialog({
+    title: t('ai.token.importTitle'),
+    body,
+    onClose: () => {
+      managing = false
+      view.error = ''
+      draw()
+    },
+  })
+  pasteStep()
 }
 
 /** 启用 / 导出共用：只问密码，回车即提交 */
