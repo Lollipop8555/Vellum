@@ -1,7 +1,11 @@
-import { applyStaticText, getLang, initLang, onLangChange, setLang, t } from '../i18n'
+import { applyStaticText, getLang, initLang, onLangChange, setLang, t, type MessageKey } from '../i18n'
 import { CodeMirrorAdapter } from '../editors/codemirror'
 import type { EditorAdapter } from '../editors/adapter'
 import { destroyMindmap, renderMindmap } from '../ui/mindmap'
+import { parseDeck, type DeckPage } from '../ui/slides/deck'
+import { renderDeckHtml, playerPlaceholder, type PlayerPage } from '../ui/slides/player'
+import { deckTemplate, specCheck, specDetail, specMarkdown } from '../ui/slides/spec'
+import { destroyDeck, renderDeck } from '../ui/slides/view'
 import { activeIndex, extractOutline, type OutlineItem } from '../ui/outline'
 import { isMarkdownLike, supportsDocView } from '../doc-views'
 import {
@@ -259,6 +263,23 @@ const mindmapContent = createContent({
 })
 
 /**
+ * 幻灯片：同一份文本的第三种画法。分页由 remark 的词法器决定，
+ * 每页内容仍走 renderMarkdown —— 面板、打印、放映看到的是同一个渲染结果。
+ * 页面列表靠 IntersectionObserver 惰性渲染，关面板时要拆掉观察者与拖拽监听。
+ */
+const pptContent = createContent({
+  id: 'ppt',
+  titleKey: 'panel.ppt',
+  className: 'deck-body',
+  rootId: 'deckBody',
+  // 放映 / 导出 / 语法速查都只属于这一视图；
+  // 速查页正文就是 `spec.ts` 的速查页，与新建模板、AI 说明同源
+  actions: ['deckOpen', 'deckExport', 'deckHelp'],
+  render: () => renderDeckInto(pptContent.root),
+  onUnmount: () => destroyDeck(pptContent.root),
+})
+
+/**
  * AI 面板：唯一一个「不读 state.text」的右侧内容 —— 凭据库与当前文件无关，
  * 所以它不带 `data-doc-action`，没有文件时也点得开（plans/ai-assistant.md §14.5）。
  */
@@ -421,6 +442,7 @@ const aiDocHost: DocHost = {
   rev: () => docRev,
   createCopy: aiDocCreateCopy,
   write: aiDocWrite,
+  deckSpec: aiDeckSpec,
   workspace: (id) => aiWorkspaceView(id),
   listWorkspaces: aiWorkspaceList,
   createWorkspace: createAiWorkspace,
@@ -437,6 +459,19 @@ const aiDocHost: DocHost = {
   createProjectAsset: aiCreateProjectAsset,
   writeNodeBytes: aiWriteNodeBytes,
   runScript: aiRunScript,
+}
+
+/**
+ * `read_deck_spec` 的正文：只有当前文档**已经在按页组织**时才给规格。
+ *
+ * 没有文档级别的声明了，判据换成「至少有一处分页」（≥2 页）：普通 Markdown
+ * 里没有 `---` 分页时不该让模型照着幻灯片语法往里加分页线；已经分了页的文档，
+ * 模型确实需要知道页属性与备注怎么写。
+ */
+function aiDeckSpec(): string | null {
+  if (!supportsDocView(currentLang(), 'ppt')) return null
+  if (parseDeck(state.text).pages.length < 2) return null
+  return specDetail()
 }
 
 /** grep 用：文本文件的规范 UTF-8 文本；二进制资产与无内容的节点返回 null */
@@ -981,6 +1016,25 @@ function wireRails() {
     // 必须先把这一轮渲染（含图表）跑完，否则会打出占位源码（§12.5）
     void activateBinding('previewBtn', true).finally(() => window.print())
   })
+  el('deckOpen').addEventListener('click', () => void openDeckPlayer())
+  el('deckExport').addEventListener('click', () => void exportDeckHtml())
+  el('deckHelp').addEventListener('click', () => openDeckHelp())
+}
+
+/**
+ * 幻灯片语法速查。
+ *
+ * 内容来自 `ui/slides/spec.ts`——和新建模板、AI 说明、诊断共用一份定义，
+ * 改语法时只需要改那一处。渲染走 `renderMarkdown()`，所以对话框里的表格、
+ * 代码块跟正文长得一模一样，不需要第二套样式。
+ */
+function openDeckHelp(): void {
+  const holder = document.createElement('div')
+  holder.className = 'markdown-body dialog-doc'
+  openDialog({ title: t('deck.help'), body: holder })
+  void renderMarkdown(specMarkdown()).then((html) => {
+    holder.innerHTML = html
+  })
 }
 
 /**
@@ -1118,6 +1172,14 @@ function wireDrawer() {
   newMenuBtn.addEventListener('click', () =>
     newItemMenuDialog(newMenuBtn, {
       file: () => void createNode('file'),
+      // 演示文稿 = 预填模板的文件：模板与语法速查、AI 说明同源（ui/slides/spec.ts）
+      deck: () =>
+        void createNode('file', targetParent(), {
+          seed: deckTemplate(),
+          suffix: '.md',
+          titleKey: 'action.newDeck',
+          prefix: `${t('action.newDeck')}-`,
+        }),
       folder: () => void createNode('folder'),
       paste: () => void importPasted(),
       url: () => void importFromUrl(),
@@ -2147,14 +2209,16 @@ function syncPanelButtons() {
   const lang = currentLang()
   const doc = Boolean(rec) && supportsDocView(lang, 'doc')
   const map = Boolean(rec) && supportsDocView(lang, 'mindmap')
+  const ppt = Boolean(rec) && supportsDocView(lang, 'ppt')
   el('previewBtn').hidden = !doc
   el('outlineBtn').hidden = !rec
   el('issuesBtn').hidden = !rec
   el('mindmapBtn').hidden = !map
+  el('pptBtn').hidden = !ppt
   // 当前这一页在当前文件上不适用时，面板不收起、转到大纲：
   // 切个文件就把侧栏闪没，比留着它更烦
   const active = activeContentId('right')
-  const stale = (active === 'preview' && !doc) || (active === 'mindmap' && !map)
+  const stale = (active === 'preview' && !doc) || (active === 'mindmap' && !map) || (active === 'ppt' && !ppt)
   // 已经换过内容就别再走一遍末尾的刷新，否则同一个内容会被渲染两次
   if (stale && state.previewOpen) {
     void showContent('right', 'outline')
@@ -2186,6 +2250,7 @@ function registerPanelSlot() {
   registerBinding({ trigger: 'outlineBtn', slot: 'right', content: 'outline', toggle: true })
   registerBinding({ trigger: 'issuesBtn', slot: 'right', content: 'issues', toggle: true })
   registerBinding({ trigger: 'mindmapBtn', slot: 'right', content: 'mindmap', toggle: true })
+  registerBinding({ trigger: 'pptBtn', slot: 'right', content: 'ppt', toggle: true })
 }
 
 function closePanel() {
@@ -3298,6 +3363,18 @@ function revealNode(id: string): void {
   row?.scrollIntoView({ block: 'nearest' })
 }
 
+/** 新建时的预置：模板内容、默认名（演示文稿用），普通新建不传 */
+interface CreatePreset {
+  /** 预填内容，跟节点一起落库 */
+  seed?: string
+  /** 用户没写扩展名时补上的后缀（`.md`），免得建出来是纯文本视图 */
+  suffix?: string
+  /** 弹窗标题 */
+  titleKey?: MessageKey
+  /** 默认名前缀 */
+  prefix?: string
+}
+
 /**
  * 新建：先在屏幕中心问名字，再落库。
  * 早先是「先建好一个未命名、再在列表里就地改名」，但那个输入框只能靠 Esc/回车提交，
@@ -3307,6 +3384,7 @@ function revealNode(id: string): void {
 async function createNode(
   kind: 'file' | 'folder',
   parentId: string | null = targetParent(),
+  preset: CreatePreset = {},
 ): Promise<void> {
   // 回到文件页并把选择归位：新节点要能出现在列表里
   state.renamingId = null
@@ -3317,25 +3395,44 @@ async function createNode(
 
   const taken = takenNames(state.files, parentId)
   const prefix =
-    kind === 'file' ? `${t('misc.untitled').replace(/\.\w+$/, '')}-` : `${t('misc.newFolder')}-`
+    preset.prefix ??
+    (kind === 'file' ? `${t('misc.untitled').replace(/\.\w+$/, '')}-` : `${t('misc.newFolder')}-`)
   // 落到子文件夹时把位置写进提示：抽屉可能收着，光看名字看不出建在哪
   const where = parentId ? nodePath(buildTree(state.files), parentId) : ''
   const hint = where ? `${t('dialog.newWhere', { path: where })}\n${t('dialog.newHint')}` : t('dialog.newHint')
 
-  const name = await promptDialog({
-    title: kind === 'file' ? t('action.newFile') : t('action.newFolder'),
-    value: nextUntitled(taken, prefix),
+  // 用户没写扩展名时补上模板的后缀；重名判断也用补过后缀的名字，否则会建出两个同名的
+  const withSuffix = (raw: string) => {
+    if (!preset.suffix || /\.[A-Za-z0-9]+$/.test(raw)) return raw
+    return `${raw}${preset.suffix}`
+  }
+
+  // 默认名是「前缀-N」不代表后缀，而 taken 里存的是全名：把后缀剥掉再比，
+  // 否则第二次新建演示文稿会默认到「演示文稿-1」——补成 `.md` 后正好撞上已有文件，
+  // 用户一进来就看到重名错误
+  const suffixKey = preset.suffix?.toLowerCase() ?? ''
+  const baseTaken = new Set(taken)
+  if (suffixKey) {
+    for (const name of taken) {
+      if (name.endsWith(suffixKey)) baseTaken.add(name.slice(0, -suffixKey.length))
+    }
+  }
+
+  const input = await promptDialog({
+    title: t(preset.titleKey ?? (kind === 'file' ? 'action.newFile' : 'action.newFolder')),
+    value: nextUntitled(baseTaken, prefix),
     hint,
     submitOnDismiss: true,
     validate: (raw) => {
       const valid = validateName(raw)
       if (!valid.ok) return t(nameErrorKey(valid.reason))
       // 重名挡在窗口里说明，而不是建完再悄悄加 (1)
-      if (taken.has(normalizeName(valid.name))) return t('err.nameDuplicate')
+      if (taken.has(normalizeName(withSuffix(valid.name)))) return t('err.nameDuplicate')
       return null
     },
   })
-  if (name === null) return
+  if (input === null) return
+  const name = withSuffix(input)
 
   // 后缀说了算：写 a.ts 就该按 TS 高亮，不再一律当纯文本
   const node =
@@ -3346,11 +3443,16 @@ async function createNode(
           lang: langFromName(name),
           langSource: 'ext',
           engine: state.engineId,
+          size: preset.seed ? new Blob([preset.seed]).size : 0,
         })
       : createFolderNode(name, parentId)
 
-  // 新建即落库（D-09），空文件不写 contents；之后再改内容才写
+  // 新建即落库（D-09），空文件不写 contents；之后再改内容才写。
+  // 带模板的（演示文稿）连内容一起写：先建空文件再等编辑器保存会留下一个「空演示文稿」中间态
   await store.putNode(node)
+  if (preset.seed) {
+    await store.putContent({ id: node.id, blob: new Blob([preset.seed], { type: 'text/plain' }) })
+  }
   if (parentId) {
     state.expanded.add(parentId)
     saveExpanded()
@@ -4050,7 +4152,7 @@ async function renderPreviewInto(host: HTMLElement): Promise<void> {
   // 图表从占位换成 svg 会改变高度，渲染完再校正一次
   if (seq !== previewSeq) return
   host.scrollTop = scrollTop
-  await hydrateDiagrams(host, seq)
+  await hydrateDiagrams(host, () => seq === previewSeq && previewContent.isVisible())
   if (seq === previewSeq) host.scrollTop = scrollTop
 }
 
@@ -4064,21 +4166,21 @@ const DIAGRAM_SELECTOR = '.mermaid-block, .graphviz-block, .plantuml-block'
  * 首屏包不该为没出现的图表付钱。顺序固定 mermaid → graphviz → plantuml，
  * 纯属历史顺序；plantuml 放最后是因为它最慢（要等网络）。
  */
-async function hydrateDiagrams(body: HTMLElement, seq: number) {
+async function hydrateDiagrams(body: HTMLElement, isAlive: () => boolean) {
   const theme = currentTheme()
   if (body.querySelector('.mermaid-block')) {
     const { renderMermaidBlocks } = await import('../ui/mermaid')
-    if (seq !== previewSeq || !previewContent.isVisible()) return
+    if (!isAlive()) return
     await renderMermaidBlocks(body, theme)
   }
   if (body.querySelector('.graphviz-block')) {
     const { renderGraphvizBlocks } = await import('../ui/graphviz')
-    if (seq !== previewSeq || !previewContent.isVisible()) return
+    if (!isAlive()) return
     await renderGraphvizBlocks(body, theme)
   }
   if (body.querySelector('.plantuml-block')) {
     const { renderPlantumlBlocks } = await import('../ui/plantuml')
-    if (seq !== previewSeq || !previewContent.isVisible()) return
+    if (!isAlive()) return
     await renderPlantumlBlocks(body, theme)
   }
 }
@@ -4093,8 +4195,9 @@ function refreshPreviewTheme() {
 let mindmapTimer = 0
 
 function schedulePreview() {
-  // 文本变了：导图和预览是同一份文本的两种画法，一起排队重画
+  // 文本变了：导图、幻灯片和预览是同一份文本的三种画法，一起排队重画
   scheduleMindmap()
+  schedulePpt()
   if (!previewContent.isVisible()) return
   window.clearTimeout(previewTimer)
   previewTimer = window.setTimeout(() => void renderPreviewInto(previewContent.root), 250)
@@ -4107,6 +4210,256 @@ function scheduleMindmap() {
   mindmapTimer = window.setTimeout(() => {
     renderMindmapInto(mindmapContent.root)
   }, 350)
+}
+
+let pptTimer = 0
+
+/** 幻灯片要先解析成页再逐页渲染，防抖和导图一致 */
+function schedulePpt() {
+  if (!pptContent.isVisible()) return
+  window.clearTimeout(pptTimer)
+  pptTimer = window.setTimeout(() => renderDeckInto(pptContent.root), 300)
+}
+
+/**
+ * 幻灯片的渲染入口。
+ *
+ * 解析是同步的纯字符串扫描，页内容按需渲染（view 层用 IntersectionObserver
+ * 只看视口附近那几页），所以大文档不会一次性把几百页塞进 DOM。
+ * 超过 light 上限的文件直接给提示：分页解析要扫全文，这时它和预览一样是负担。
+ */
+function renderDeckInto(host: HTMLElement): void {
+  if (!pptContent.isVisible()) return
+  if (!supportsDocView(currentLang(), 'ppt')) return
+  // 按钮跟着文档状态走：不是演示文稿、或只有一页时不该亮着
+  syncDeckActions()
+
+  if (state.text.length > LIMITS.light) {
+    const tip = document.createElement('p')
+    tip.className = 'deck-empty'
+    tip.textContent = t('deck.tooBig')
+    host.replaceChildren(tip)
+    return
+  }
+
+  renderDeck(host, parseDeck(state.text), {
+    // 只有换文件才把缩放与位置归零；打字触发的重画保留当前视野
+    viewKey: state.current?.id ?? '',
+    onJump: (line) => {
+      state.editor?.goToLine(line)
+      state.editor?.focus()
+    },
+    // 图表的三个引擎按需加载，页被换掉或面板收起后就别再画了
+    // 返回 Promise：图表 hydrate 完高度会变，视图层要再量一次是否放得下
+    onPageRendered: (slot) => hydrateDiagrams(slot, () => slot.isConnected && pptContent.isVisible()),
+  })
+}
+
+/* ----------------------------------------------------------- 放映与导出 */
+
+/** 单张图片内联上限：再大就不进导出文件，别让一份演示文稿变成几十 MB */
+const DECK_IMAGE_MAX = 512 * 1024
+
+/** 放映窗口标题 / 导出文件名：当前文件名去掉扩展名 */
+function deckTitle(): string {
+  const name = state.current?.name ?? t('action.newDeck')
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? name.slice(0, dot) : name
+}
+
+/**
+ * 把页内相对路径的图片换成 `data:`。
+ *
+ * 播放器在新窗口里没有基址（`about:blank`），导出的 `.html` 也可能被挪到别处，
+ * 所以相对路径的图必须内联。工作区是**扁平**节点表，markdown 里的 `img/a.png`
+ * 没有目录可依，这里按文件名匹配资产 —— 同名取第一个。找不到就原样留着：
+ * 放映时是坏图，但不会把整份文档弄坏。
+ */
+async function inlineDeckImages(root: HTMLElement): Promise<void> {
+  const images = Array.from(root.querySelectorAll('img[src]'))
+  for (const img of images) {
+    const src = img.getAttribute('src') ?? ''
+    if (!src || /^(data:|https?:|blob:|\/\/)/i.test(src)) continue
+
+    let name = src.split(/[?#]/)[0]
+    try {
+      name = decodeURIComponent(name)
+    } catch {
+      /* 编码坏了就按原样比 */
+    }
+    name = name.split('/').pop() ?? ''
+    const node = state.files.find(
+      (item) => item.kind === 'file' && item.asset && item.deletedAt === null && item.name === name,
+    )
+    if (!node) continue
+
+    const content = await store.getContent(node.id)
+    const blob = content?.blob ?? content?.originalBytes
+    if (!blob) continue
+    if (blob.size > DECK_IMAGE_MAX) {
+      const note = document.createElement('span')
+      note.className = 'deck-image-note'
+      note.textContent = t('deck.imageTooBig', { name })
+      img.replaceWith(note)
+      continue
+    }
+    const dataUrl = await blobToDataUrl(blob)
+    if (dataUrl) img.setAttribute('src', dataUrl)
+  }
+}
+
+function blobToDataUrl(blob: Blob): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
+    reader.onerror = () => resolve(null)
+    reader.readAsDataURL(blob)
+  })
+}
+
+/**
+ * 把当前文档渲染成放映器需要的每页数据。
+ *
+ * 不在面板 DOM 上抄：面板用 IntersectionObserver 只渲染视口附近那几页，抄出来一半是空槽。
+ * 这里逐页 `renderMarkdown()` 再就地 hydrate 图表，拿到的是内联 SVG，放映与面板同源。
+ */
+async function buildPlayerPages(pages: readonly DeckPage[]): Promise<PlayerPage[]> {
+  const out: PlayerPage[] = []
+  for (const page of pages) {
+    const box = document.createElement('div')
+    box.className = 'deck-page-inner markdown-body'
+    box.innerHTML = await renderMarkdown(page.source)
+    await hydrateDiagrams(box, () => true)
+    await inlineDeckImages(box)
+    const { classes, background } = page.props
+    out.push({
+      html: box.innerHTML,
+      // 与 `view.ts` 同一套规则：默认居中，`left` / `top` 才关掉
+      align: classes.includes('left') ? 'left' : 'center',
+      valign: classes.includes('top') ? 'top' : 'middle',
+      color: background.color,
+      image: background.image,
+      size: background.size,
+      position: background.position,
+      notes: page.notes,
+    })
+  }
+  return out
+}
+
+/** 当前文档能否放映：有页、且没过 light 上限 */
+function canPlayDeck(): boolean {
+  if (!state.current) return false
+  if (state.text.length > LIMITS.light) return false
+  return parseDeck(state.text).pages.length > 0
+}
+
+/**
+ * 打开放映：新窗口优先，被拦截就退到本页 iframe 全屏。
+ *
+ * `window.open()` 必须卡在点击的同一个任务里，所以先开一个占位窗口，
+ * 渲染完（视文档大小几百毫秒）再 `document.write` 把整份文档写进去。
+ */
+async function openDeckPlayer(): Promise<void> {
+  const doc = parseDeck(state.text)
+  if (doc.pages.length === 0) {
+    toast(t('deck.empty'), 'error')
+    return
+  }
+  if (state.text.length > LIMITS.light) {
+    toast(t('deck.tooBig'), 'error')
+    return
+  }
+
+  const title = deckTitle()
+  // 先占窗口：这一步之后再 await 多久，都不会被弹窗拦截
+  let win: Window | null = null
+  try {
+    win = window.open('', '_blank')
+  } catch {
+    win = null
+  }
+  if (win) {
+    win.document.write(playerPlaceholder(title))
+    win.document.close()
+  }
+
+  try {
+    const pages = await buildPlayerPages(doc.pages)
+    const html = renderDeckHtml({
+      title,
+      ratio: doc.ratio,
+      theme: currentTheme(),
+      pages,
+      helpText: specMarkdown(),
+    })
+    if (win && !win.closed) {
+      win.document.open()
+      win.document.write(html)
+      win.document.close()
+      return
+    }
+    playDeckInline(html)
+  } catch (err) {
+    win?.close()
+    toast((err as Error).message, 'error')
+  }
+}
+
+/**
+ * 新窗口被拦截时的退路：在当前页铺一层全屏 iframe。
+ * 播放器里的 Esc 会 `postMessage` 出来 —— iframe 的键盘事件不冒泡到外层。
+ */
+function playDeckInline(html: string): void {
+  const frame = document.createElement('iframe')
+  frame.className = 'deck-player-frame'
+  frame.title = deckTitle()
+  frame.setAttribute('allow', 'fullscreen')
+  frame.srcdoc = html
+  document.body.appendChild(frame)
+  toast(t('deck.player.blocked'))
+
+  const onMessage = (event: MessageEvent) => {
+    if ((event.data as { type?: string } | null)?.type !== 'deck-exit') return
+    window.removeEventListener('message', onMessage)
+    frame.remove()
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
+  }
+  window.addEventListener('message', onMessage)
+}
+
+/** 导出：整份演示文稿存成一个自包含的 `.html`，双击就能放 */
+async function exportDeckHtml(): Promise<void> {
+  const doc = parseDeck(state.text)
+  if (doc.pages.length === 0) {
+    toast(t('deck.empty'), 'error')
+    return
+  }
+  if (state.text.length > LIMITS.light) {
+    toast(t('deck.tooBig'), 'error')
+    return
+  }
+  try {
+    const pages = await buildPlayerPages(doc.pages)
+    const html = renderDeckHtml({
+      title: deckTitle(),
+      ratio: doc.ratio,
+      theme: currentTheme(),
+      pages,
+      helpText: specMarkdown(),
+    })
+    downloadBlob(`${deckTitle()}.html`, new Blob([html], { type: 'text/html;charset=utf-8' }))
+    toast(t('deck.exported'))
+  } catch (err) {
+    toast((err as Error).message, 'error')
+  }
+}
+
+/** 面板头的放映 / 导出按钮只对「真的能放的演示文稿」亮 */
+function syncDeckActions(): void {
+  const ok = canPlayDeck()
+  el<HTMLButtonElement>('deckOpen').disabled = !ok
+  el<HTMLButtonElement>('deckExport').disabled = !ok
 }
 
 /**
@@ -4314,19 +4667,41 @@ function runDiagnostics(): void {
       mdRules: diagMdRules(),
       mdLineLength: diagMdLineLength(),
     })
+    // 幻灯片结构告警：只在真的分了页（≥2 页）的文档上产出
+    // （普通 Markdown 里的 `---` 是分隔线，按分页报就是误报）
+    const deck = deckWarnings(text, lang, checks)
     // 算的过程中又改了/又切了文件：这一份已经过期，丢掉
     if (seq !== diagSeq || state.current?.id !== rec.id) return
-    diagIssues = result.issues
+    diagIssues = deck.length > 0 ? [...result.issues, ...deck] : result.issues
     diagRan = result.ran
     diagKey = key
     diagBusy = false
     applyDiagnostics()
-    void store.setMeta(`diag:${rec.id}`, { key, issues: result.issues } as DiagCache)
+    void store.setMeta(`diag:${rec.id}`, { key, issues: diagIssues } as DiagCache)
   }
 
   // 几十 KB 以上让出一帧再算，别和输入抢同一个任务
   if (text.length > 64 * 1024) window.setTimeout(commit, 0)
   else commit()
+}
+
+/**
+ * 幻灯片结构告警（`specCheck` → `Issue`）。
+ *
+ * 挂进 `mdLint` 这一项而不是新开一个 `CheckKind`：它和 Markdown 细则同属"排版写法"，
+ * 新开一项要为它补类型、默认值、能力矩阵、设置面板、筛选列表五处，收益不成比例。
+ * 所以开关跟着 `mdLint` 走，用户在面板里关掉 Markdown 细则时这些也一起消失。
+ */
+function deckWarnings(text: string, lang: LangId, checks: ChecksSettings): Issue[] {
+  if (!checks.mdLint || !supportsDocView(lang, 'ppt')) return []
+  return specCheck(text).map((item) => ({
+    from: item.from,
+    to: Math.max(item.from + 1, item.to),
+    severity: 'warning' as const,
+    kind: 'mdLint' as const,
+    key: item.key,
+    source: 'deckSpec',
+  }))
 }
 
 /** 结果落地：编辑器波浪线 + 状态栏 + 面板（面板只在看得见时才画） */

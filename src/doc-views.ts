@@ -9,10 +9,10 @@
  * 放在 src 根目录而不是 shell/ 或 ui/：outline（ui）与 diagnostics 都要用，
  * 任何一侧放都会制造反向依赖。
  */
-export type DocView = 'doc' | 'mindmap'
+export type DocView = 'doc' | 'mindmap' | 'ppt'
 
 const DOC_VIEWS: Partial<Record<string, readonly DocView[]>> = {
-  markdown: ['doc', 'mindmap'],
+  markdown: ['doc', 'mindmap', 'ppt'],
 }
 
 export function docViewsOf(lang: string): readonly DocView[] {

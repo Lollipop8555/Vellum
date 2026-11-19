@@ -38,6 +38,8 @@
 - 行/列、字符数、字数的状态栏实时显示
 - Markdown 右侧预览（左缘拖拽调宽、双击还原、宽度跨会话记住）+ 打印（可直接出 PDF）；非 Markdown 文件不显示预览按钮，免得点了只弹提示
 - 预览支持 mermaid 图表（```` ```mermaid ```` 代码块，按需懒加载，仅在有图表时才下载渲染器）
+- Markdown 右侧「幻灯片」面板：打开就按 remark 语法分页（`---`、`???` 备注、`name:` / `class:` / `background-*:` 页属性），不需要文件头声明（同一份文档在文档视图里照常阅读），每页 1280×720 画布，正文交给预览同一条渲染管线；页内容默认水平 + 竖直居中（页首写 `class: left, top` 可回到左上排版），一页内容当成一个块整体缩放塞进页面（内容多就缩小、一句话就放大，不裁切），缩放控件与导图同构（按钮、`Ctrl/Cmd + 滚轮` 锚点缩放、适应宽度），可拖拽平移，点页卡或页码跳到该页源码首行
+- 放映：面板头 ▶ 在新窗口里全屏放映（被拦截则本页 iframe），键盘翻页 / `f` 全屏 / `p` 演讲者视图（当前页 + 下一页 + 备注 + 计时）/ `b` 黑屏 / `s` 计时 / `h` 帮助 / `Esc` 退出，地址栏 `#p2` 可直接定位；导出按钮把整份演示文稿存成一个自包含 `.html`（样式、代码高亮、图表全内联，断网双击可放）
 
 ### 语言支持
 
@@ -159,6 +161,22 @@ Markdown 右侧的「导图」面板不是自绘布局，用的是 [markmap](htt
 - 节点内容走 `foreignObject`，所以文字仍由我们渲染（加粗、行内代码、代码块、表格、公式、任务列表的样式与预览同源）。
 - 引擎的默认样式（`globalCSS`）写在 svg 自带的 `<style>` 里；我们自己的 `.mm2-*` / `.markmap*` 规则在 `src/ui/styles.css`，导出 SVG 时会被抽出来内联进文件。
 - 升级：改 `vendor/VERSIONS.json` 里 `markmap-view` 的版本 → `npm run vendor:pull` → `npm run verify`。
+
+### 幻灯片用的 remark 语法层
+
+「幻灯片」面板的分页规则（`---` 分页、`???` 备注、`name:` / `class:` / `background-*:` 页属性、`--` 增量片段、`[.class[...]]` 内容类）来自 [remark](https://github.com/gnab/remark) v0.15.0（MIT），以源码移植的方式放在 `src/ui/slides/port/`：
+
+| 文件 | 上游 | 改动 |
+|---|---|---|
+| `lexer.ts` | `src/remark/lexer.js` | CJS → ESM/TS；token 增加 `start` 字符偏移 |
+| `parser.ts` | `src/remark/parser.js` | CJS → ESM/TS；页增加 `start`；不支持 JS 宏；导出 `cleanInput()` |
+| `types.ts` | `src/remark/lexer.js` 的 token 形状 | 类型定义 |
+
+只借语法层，**渲染层没有用 remark 的 DOM/CSS**：每页内容交给项目自己的 `renderMarkdown()` 管线（同一套 remark 插件、同一份 `.markdown-body` 样式），所以代码高亮、表格、公式、图表在各视图里表现一致。放映器（`src/ui/slides/player.ts`）只负责外壳与导航：页 HTML 由壳层逐页重新渲染后传进去，整份 `styles.css` 以 `?inline` 内联，因此新窗口放映与导出的 `.html` 和面板是同一套像素。
+
+写法说明只有一个来源 `src/ui/slides/spec.ts`，同时喂给五处：面板头 `?` 的「幻灯片语法」速查、新建菜单里的「演示文稿」模板、AI 的 system prompt 摘要、AI 的只读工具 `read_deck_spec`，以及问题面板里的结构告警（单行页、页内多 h1、`???` 空备注、跨页引用式链接、拼错的页属性，挂在「Markdown 细则」这一项诊断下）。改语法时只改这一个文件。
+
+同一份文档不需要任何文件头声明就能两用：文档视图里是普通文章（`???` 备注显示为灰色旁注），切到幻灯片视图就按 `---` 分页。
 
 ## 开发
 

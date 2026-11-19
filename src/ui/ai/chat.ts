@@ -72,6 +72,7 @@ import {
   type ProfileRecord,
 } from '../../shell/ai/vault'
 import { getSettings, updateSettings } from '../../shell/settings'
+import { specForAi } from '../slides/spec'
 import { toast } from '../toast'
 import { confirmDialog, openDialog } from '../dialogs'
 import { renderMarkdown } from '../markdown'
@@ -787,6 +788,7 @@ function messageNode(message: ChatMessage, gen: number): HTMLElement {
 
 /** 工具名 → 人类可读的一行（未登记的插件式工具名原样显示，别把真名藏起来） */
 const TOOL_LABELS: Record<string, MessageKey> = {
+  read_deck_spec: 'ai.tool.read_deck_spec',
   read_doc: 'ai.tool.read_doc',
   apply_edits: 'ai.tool.apply_edits',
   replace_doc: 'ai.tool.replace_doc',
@@ -1255,6 +1257,18 @@ interface RoundOutcome {
 }
 
 /**
+ * 当前文件是幻灯片时，追加给 system prompt 的语法摘要。
+ *
+ * 只放「最容易写错」的那几条（分页、备注、页属性、每页独立），完整规则仍由
+ * `read_deck_spec` 现取：一次对话往往只改一两页，把整张语法表常驻是白占上下文。
+ * 「是不是幻灯片」的判断交给宿主（`deckSpec()`），本模块不解析文档。
+ */
+function deckPreamble(env: TurnEnv): string {
+  if (!env.docHost?.deckSpec?.()) return ''
+  return specForAi()
+}
+
+/**
  * 一轮请求：把 SSE 事件收敛成「文字 + 工具调用」，DOM 边流边推。
  *
  * 工具调用的 id 在部分 provider 上会缺（只在首个分片给一次，或干脆不给）：
@@ -1273,7 +1287,10 @@ async function streamRound(
   // 每轮都重新裁：工具结果让报文涨得很快，只有发请求这一刻的判断算数
   const trimmed = trimHistory(messages, BUDGET_TOKENS)
   const payload: WireMessage[] = [
-    { role: 'system', content: systemPrompt({ workspaceId: current.workspaceId }) },
+    {
+      role: 'system',
+      content: systemPrompt({ workspaceId: current.workspaceId, extra: deckPreamble(env) }),
+    },
     // 库里可能存着残链（旧版本 / 中断 / 手改）：发之前补一次，否则一条脏记录
     // 就让整个会话永远 400，用户只会看到「全部都坏了」
     ...sanitizeWire(trimmed.messages),

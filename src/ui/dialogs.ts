@@ -280,6 +280,14 @@ const LINK_ICON =
   '<path d="M11.4 8.6a2.9 2.9 0 0 0-4.1 0l-2.1 2.1a2.9 2.9 0 0 0 4.1 4.1l.9-.9" fill="none" ' +
   'stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
 
+// 屏幕 + 播放三角：和右竖条的幻灯片入口同一个意象
+const DECK_ICON =
+  '<svg viewBox="0 0 20 20" aria-hidden="true">' +
+  '<rect x="2.6" y="3.9" width="14.8" height="10.2" rx="1.4" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.3"/>' +
+  '<path d="M8.4 6.5l3.6 2.5-3.6 2.5z" fill="currentColor"/>' +
+  '<path d="M6.6 16.1h6.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>'
+
 /** 同一时刻只允许一个 + 菜单，再点同一个按钮视为收起 */
 let popMenu: { anchor: HTMLElement; root: HTMLElement; close(): void } | null = null
 
@@ -293,7 +301,7 @@ export function closeNewItemMenu() {
  */
 export function newItemMenuDialog(
   anchor: HTMLElement,
-  actions: { file(): void; folder(): void; paste(): void; url(): void },
+  actions: { file(): void; deck(): void; folder(): void; paste(): void; url(): void },
 ) {
   if (popMenu?.anchor === anchor) {
     popMenu.close()
@@ -331,6 +339,7 @@ export function newItemMenuDialog(
   }
 
   add(t('action.newFile'), FILE_ICON, actions.file)
+  add(t('action.newDeck'), DECK_ICON, actions.deck)
   add(t('action.newFolder'), FOLDER_ICON, actions.folder)
   add(t('action.clipboardImport'), CLIPBOARD_ICON, actions.paste)
   add(t('action.urlImport'), LINK_ICON, actions.url)

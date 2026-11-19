@@ -531,6 +531,51 @@
                 <path d="M10 6.5V10l2.6 1.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
+            <!-- 幻灯片：打开放映 / 导出 HTML（都只在这一视图出现） -->
+            <button class="btn btn-ghost icon-only" id="deckOpen" data-panel-action data-i18n-title="deck.open" hidden>
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M7.4 5.9v8.2l6.8-4.1z" fill="currentColor" />
+              </svg>
+            </button>
+            <button
+              class="btn btn-ghost icon-only"
+              id="deckExport"
+              data-panel-action
+              data-i18n-title="deck.exportHtml"
+              hidden
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path
+                  d="M10 4.4v6.6m0 0 2.7-2.7M10 11l-2.7-2.7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <path
+                  d="M5.2 13.3v1.3a1 1 0 0 0 1 1h7.6a1 1 0 0 0 1-1v-1.3"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
+            <!-- 幻灯片：语法速查（只在这一视图出现，内容来自 ui/slides/spec.ts） -->
+            <button class="btn btn-ghost icon-only" id="deckHelp" data-panel-action data-i18n-title="deck.help" hidden>
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <circle cx="10" cy="10" r="6.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+                <path
+                  d="M8.2 8a1.9 1.9 0 1 1 2.4 1.9c-.5.2-.8.6-.8 1.1v.2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                />
+                <circle cx="9.8" cy="13.5" r="0.85" fill="currentColor" />
+              </svg>
+            </button>
             <button
               class="btn btn-ghost icon-only"
               id="previewPrint"
@@ -629,6 +674,18 @@
               <circle cx="16.4" cy="10" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3" />
               <circle cx="16.4" cy="15.4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3" />
               <path d="M5 10c4 0 3.6-5.4 9.9-5.4M5 10h9.9M5 10c4 0 3.6 5.4 9.9 5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button
+            class="rail-btn"
+            id="pptBtn"
+            data-panel-trigger="pptBtn"
+            data-i18n-title="rail.ppt"
+            hidden
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <rect x="2.6" y="4.4" width="14.8" height="11.2" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path d="M8.6 7.9l4 2.1-4 2.1z" fill="currentColor" />
             </svg>
           </button>
           <button

@@ -80,7 +80,7 @@ export function wrap(body: string, tag: string): string {
  * system prompt 只写「规矩」，不写文件内容。
  * 每条都对应一个工具校验分支，别在这里加做不到的承诺（模型会照着承诺去试）。
  */
-export function systemPrompt(scope?: { workspaceId?: string }): string {
+export function systemPrompt(scope?: { workspaceId?: string; extra?: string }): string {
   return [
     '你是 Vellum 编辑器中的写作与代码助手：既可修改当前文件的副本，也可在**工作区**目录中创建与修改文件。',
     '',
@@ -105,6 +105,8 @@ export function systemPrompt(scope?: { workspaceId?: string }): string {
     '',
     '修改内容优先采用锚点形式 `{find, replace}`：`find` 为原文片段，须逐字一致；无法确定行号时，请勿强行推算。',
     '若目标文件为只读（受大文件保护或被用户锁定），写工具将返回 `readonly`，此时应向用户说明需要修改的内容。',
+    // 文档类型专属说明（当前是幻灯片时才有）：由调用方按当前文件决定，本模块不认识具体格式
+    ...(scope?.extra ? ['', scope.extra] : []),
   ].join('\n')
 }
 

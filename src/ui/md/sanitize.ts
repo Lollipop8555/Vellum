@@ -79,14 +79,16 @@ const attributes: AttrList = {
   img: withClass(base.attributes?.img, ['src', 'alt', 'title', 'width', 'height']),
   details: withClass(base.attributes?.details, ['open']),
   summary: withClass(base.attributes?.summary),
+  // `???` 备注在文档视图里渲染成 aside.md-notes（见 pipeline.ts 的 remarkNotes）
+  aside: withClass(base.attributes?.aside),
   math: ['xmlns', 'display', 'className', 'style'],
   annotation: ['encoding'],
 }
 
 export const schema: Schema = {
   ...base,
-  // details/summary 是语料里真实在用的折叠块（各 15 处）
-  tagNames: [...(base.tagNames ?? []), 'details', 'summary', ...MATH_TAGS],
+  // details/summary 是语料里真实在用的折叠块（各 15 处）；aside 承载 `???` 备注
+  tagNames: [...(base.tagNames ?? []), 'details', 'summary', 'aside', ...MATH_TAGS],
   attributes,
   protocols: {
     ...base.protocols,

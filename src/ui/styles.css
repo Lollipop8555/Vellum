@@ -61,6 +61,8 @@
   --c-scroll-hover: #d8d8de4d;
   /* 只有浮层用阴影；平铺的 island 靠描边分块 */
   --shadow-drawer: 0 8px 28px rgba(0, 0, 0, 0.45);
+  /* 幻灯片页卡是「一摞纸」，只要一点悬浮感，阴影重了就抢内容 */
+  --shadow-deck: 0 1px 3px rgba(0, 0, 0, 0.28);
 
   /* 语法着色（低饱和，两个引擎共用） */
   --syn-key: #b58ce0;
@@ -100,6 +102,7 @@
   --c-scroll: #1e1e232e;
   --c-scroll-hover: #1e1e2352;
   --shadow-drawer: 0 10px 30px rgba(20, 20, 30, 0.18);
+  --shadow-deck: 0 1px 2px rgba(20, 20, 30, 0.06);
 
   --syn-key: #8b3fc4;
   --syn-str: #2f7d3a;
@@ -1616,8 +1619,12 @@ body.is-resizing {
   --mm-b7: #9333ea;
 }
 
-/* 浮在视口上，不参与滚动也不改滚动尺寸 */
-.mindmap-tools {
+/**
+ * 浮在视口上，不参与滚动也不改滚动尺寸。
+ * 导图与幻灯片共用同一套工具条：位置、尺寸、hover、打印隐藏都只有这一份规则，
+ * 两个面板各写一份迟早会走样。
+ */
+:is(.mindmap-tools, .deck-tools) {
   position: absolute;
   right: 10px;
   bottom: 10px;
@@ -1632,7 +1639,7 @@ body.is-resizing {
   box-shadow: var(--shadow-drawer);
 }
 
-.mindmap-tool {
+:is(.mindmap-tool, .deck-tool) {
   min-width: 26px;
   height: 24px;
   padding: 0 6px;
@@ -1646,24 +1653,24 @@ body.is-resizing {
   cursor: pointer;
 }
 
-.mindmap-tool:hover {
+:is(.mindmap-tool, .deck-tool):hover {
   background: var(--c-island-2);
   color: var(--c-text);
 }
 
-.mindmap-zoom-reset {
+:is(.mindmap-zoom-reset, .deck-zoom-reset) {
   min-width: 44px;
 }
 
 /* 图标按钮（缩放三键与导出）：竖线由 path 描边画，颜色跟着按钮的 color 走 */
-.mindmap-tool svg {
+:is(.mindmap-tool, .deck-tool) svg {
   display: block;
   width: 15px;
   height: 15px;
   margin: 0 auto;
 }
 
-.mindmap-tool svg path {
+:is(.mindmap-tool, .deck-tool) svg path {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.4;
@@ -1677,6 +1684,254 @@ body.is-resizing {
   height: 16px;
   margin: 0 2px;
   background: var(--c-border);
+}
+
+/* 放映器（P2）：新窗口被拦截时用同页全屏 iframe 顶上 */
+.deck-player-frame {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+}
+
+/* 图片太大没内联时的占位：宁可少一张图，也不让导出文件变成几十 MB */
+.deck-image-note {
+  display: inline-block;
+  padding: 6px 10px;
+  border: 1px dashed var(--c-border);
+  border-radius: 6px;
+  color: var(--c-dim);
+  font-size: 0.9em;
+}
+
+/* ------------------------------------------------- 幻灯片（remark 语法） */
+
+/**
+ * 连续页列表 + 与导图同构的缩放。
+ *
+ * 页卡是固定画布（--deck-w × --deck-h），缩放只改 --deck-scale：
+ * 外层盒子用 calc 拿真实尺寸，内容等比缩放用 transform —— 文字始终是矢量；
+ * 反过来（直接改宽高）会让 1.0 不再是「画布 1:1」，字号也就没有基准了。
+ */
+.deck-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--c-bg-2);
+}
+
+.deck-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  cursor: grab;
+}
+
+.deck-viewport.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/**
+ * 页宽可能大于面板宽（放大后），也可能刚好等于（适应宽度）。
+ * `safe center` 让超宽时退化成左对齐 —— 否则左侧一截永远滚不到。
+ */
+.deck-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  gap: 16px;
+  min-height: 100%;
+  padding: 16px 12px 64px;
+  box-sizing: border-box;
+}
+
+.deck-slot {
+  flex: none;
+  width: calc(var(--deck-w) * var(--deck-scale));
+  height: calc(var(--deck-h) * var(--deck-scale));
+  border-radius: 6px;
+  background: var(--c-island);
+  box-shadow: 0 0 0 1px var(--c-border-soft), var(--shadow-deck);
+  overflow: hidden;
+}
+
+.deck-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: var(--deck-w);
+  height: var(--deck-h);
+  padding: 56px 64px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--c-island);
+  color: var(--c-text);
+  transform: scale(var(--deck-scale));
+  transform-origin: 0 0;
+  /**
+   * 一页幻灯片默认内容居中，而不是 markdown 的左上角排版：
+   * `.deck-page-inner` 是一个「按内容自然排版、再整体缩放」的块，
+   * 所以水平靠 `align-items`、竖直靠 `justify-content` 把它摆到页面中间。
+   * 想回到传统左上排版写 `class: left`（水平）或 `class: top`（竖直）。
+   */
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  /* 页内正文按「画布宽度的百分比」排字，见 --deck-fs 的说明 */
+  container-type: inline-size;
+}
+
+/* class: left / top —— 关掉默认居中；center / middle 仍然兼容（就是默认值） */
+.deck-page[data-align='left'] {
+  text-align: left;
+}
+
+.deck-page[data-align='left'] {
+  align-items: flex-start;
+}
+
+/* 传统左上排版下内容通栏，「块宽由内容决定」那套缩放不再适用（宽度被钉在整页） */
+.deck-page[data-align='left'] .deck-page-inner {
+  align-self: stretch;
+  width: 100%;
+}
+
+.deck-page[data-valign='top'] {
+  justify-content: flex-start;
+}
+
+/**
+ * 页内排版复用 `.markdown-body` 的全部内容样式（标题/表格/代码高亮/公式/任务列表），
+ * 这里只覆盖「容器」属性并给一个放大后的字号基准。
+ *
+ * 基准是**容器宽度的百分比**（2.4306cqw）而不是固定 28px：屏幕上面板用
+ * `transform: scale()` 缩放，`.deck-page` 宽度恒为 1280（内容盒 1152，减去左右
+ * 各 64px 内边距），28px 正好是 2.4306cqw；
+ * 而打印时页宽被压到纸宽（A4 约 700px），固定 28px 会把文字放大近两倍把页撑破，
+ * 百分比则跟着一起缩，版式与屏幕上完全一致。标题/代码/表格都按 em 递推，一并缩放。
+ */
+.deck-page-inner.markdown-body {
+  /* 不参与拉伸：块高就是内容自然高，量出来才能算缩放比 */
+  flex: none;
+  /**
+   * 块宽度由内容决定，而不是撑满整页 —— 这是「极简页能放大」的前提：
+   * 宽度若固定 100%，一行标题的块宽就等于页宽，缩放比会被宽度卡死在 1。
+   * 长段落/代码块的 max-content 超过页宽时由 `max-width` 收回来照常换行。
+   */
+  width: fit-content;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  padding: 0;
+  font-size: 2.4306cqw;
+  line-height: 1.6;
+  scrollbar-gutter: auto;
+  /**
+   * `--deck-fit` 由 `autofit.ts` 的 `fitPageContent()` 写入：整块等比缩放到页面可用区域，
+   * 放不下的缩、内容少的放大（见 autofit 里的 MIN/MAX）。`transform` 不触发重排，
+   * 所以量一次就够，图片和图表也跟着一起缩。
+   */
+  transform: scale(var(--deck-fit, 1));
+  transform-origin: center;
+}
+
+/* 列表整体居中、条目内仍左对齐；`class: left` 时恢复通栏 */
+.deck-page-inner > :is(ul, ol) {
+  align-self: center;
+  max-width: 100%;
+  text-align: left;
+}
+
+.deck-page[data-align='left'] .deck-page-inner > :is(ul, ol) {
+  align-self: stretch;
+}
+
+/* 表格收缩后居中，块内按左对齐读；代码块保留通栏，只把文字拉回左对齐 */
+.deck-page-inner > table {
+  align-self: center;
+  max-width: 100%;
+  text-align: left;
+}
+
+.deck-page-inner :is(pre, code) {
+  text-align: left;
+}
+
+.deck-page-inner > :first-child {
+  margin-top: 0;
+}
+
+.deck-page-inner > :last-child {
+  margin-bottom: 0;
+}
+
+/**
+ * 缩到下限（40%，正文 11.2px）还是放不下：内容量确实失控了。
+ * 不弹提示框，只点一个小角标，免得每页都在喊；看到就知道该拆页或删内容了。
+ */
+.deck-page:has(> .deck-page-inner[data-overflow])::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-warn);
+  opacity: 0.7;
+}
+
+/* 页码夹在页卡之间的间隙里：不参与缩放，点击同样跳到该页源码 */
+.deck-pager {
+  flex: none;
+  padding: 2px 10px;
+  border-radius: 99px;
+  background: var(--c-island);
+  color: var(--c-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.deck-pager:hover {
+  background: var(--c-island-2);
+  color: var(--c-text);
+}
+
+.deck-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  color: var(--c-dim);
+  font-size: 12.5px;
+  line-height: 1.8;
+  text-align: center;
+}
+
+/* 提示语与按钮都是块级子元素：不设 margin，间距全交给上面的 gap */
+.deck-empty-text {
+  margin: 0;
+  max-width: 42ch;
+}
+
+.deck-empty[hidden] {
+  display: none;
 }
 
 /* ------------------------------------------------- 导图（markmap 引擎） */
@@ -1867,6 +2122,16 @@ body.is-resizing {
 }
 
 /**
+ * 对话框里的 Markdown（幻灯片语法速查）：滚动和内边距已经由 `.dialog-body` 提供，
+ * 再叠一层就是 32px 的厚边框感，且两层滚动条会抢滚轮。
+ */
+.dialog-doc {
+  padding: 0;
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+/**
  * 面板头只放标题，不放页签：切换入口统一由右竖条承担（和左侧抽屉一致）。
  * 两套入口并存时，用户会分不清哪个才是"当前内容"。
  */
@@ -1945,6 +2210,42 @@ body.is-resizing {
 
 .markdown-body h3 {
   font-size: 1.12em;
+}
+
+/**
+ * 幻灯片里的标题比文档视图陡一档。
+ *
+ * 文档正文 14px、h1 21px（1.5em）读起来正好；幻灯片正文 28px 时 h1 只有 42px，
+ * 隔几米看就和正文差不多了，一页里「哪里是标题」得靠读内容才分得清。
+ * 这里单独加大梯度（h1 2.15em ≈ 60px），间距也按标题自己的字号递推。
+ * h1 底下那条线在文档里是分节，投影上只剩一道表格线，去掉。
+ *
+ * 必须排在 `.markdown-body h1` 之后：页内根节点同时带这两个类、特异性相同，
+ * 靠顺序取胜（见 `slides/player.ts` 的 `.deck-page-inner markdown-body`）。
+ */
+.deck-page-inner h1 {
+  font-size: 2.15em;
+  border-bottom: 0;
+  padding-bottom: 0;
+  letter-spacing: -0.01em;
+}
+
+.deck-page-inner h2 {
+  font-size: 1.6em;
+}
+
+.deck-page-inner h3 {
+  font-size: 1.3em;
+}
+
+.deck-page-inner h4 {
+  font-size: 1.1em;
+}
+
+.deck-page-inner :is(h1, h2, h3, h4) {
+  font-weight: 650;
+  line-height: 1.22;
+  margin: 0.8em 0 0.36em;
 }
 
 .markdown-body p,
@@ -2120,6 +2421,27 @@ body.is-resizing {
 .markdown-body pre.frontmatter {
   color: var(--c-dim);
   border-style: dashed;
+}
+
+/* 只剩旧版 deck 键（slides / ratio）时整块滤空，别留一个空盒子 */
+.markdown-body pre.frontmatter:empty {
+  display: none;
+}
+
+/**
+ * `???` 演讲者备注在文档视图里的样子：比正文淡、小一号、左边一条细线。
+ * 幻灯片面板里这段是被摘走的（只给演讲者），文档视图也该「看得见但不抢戏」。
+ */
+.markdown-body aside.md-notes {
+  margin: 1em 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--c-border-soft);
+  color: var(--c-dim);
+  font-size: 0.9em;
+}
+
+.markdown-body aside.md-notes > p {
+  margin: 0.2em 0;
 }
 
 /* 图表（mermaid / graphviz / plantuml）：先显示源码，画好之后替换成图 */
@@ -2906,7 +3228,54 @@ textarea.raw {
     overflow: visible;
   }
 
-  .mindmap-tools {
+  :is(.mindmap-tools, .deck-tools) {
+    display: none;
+  }
+
+  /* 幻灯片：每页一张纸，去掉屏幕缩放，按 16:9 铺满纸宽 */
+  .deck-body {
+    position: static;
+    height: auto;
+    overflow: visible;
+  }
+
+  .deck-viewport {
+    position: static;
+    overflow: visible;
+  }
+
+  .deck-stage {
+    display: block;
+    padding: 0;
+    gap: 0;
+  }
+
+  .deck-slot {
+    width: 100%;
+    height: auto;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+    break-after: page;
+  }
+
+  /* 页宽铺满纸宽，高度按文档比例（`--deck-ratio` 由渲染层按 ratio 写入，
+     默认 16:9、也支持 4:3）；内边距用百分比，与屏幕上 1280 画布的 56/64px 等比例 */
+  .deck-page {
+    width: 100%;
+    height: auto;
+    aspect-ratio: var(--deck-ratio, 16 / 9);
+    padding: 4.375% 5%;
+    transform: none;
+    overflow: visible;
+  }
+
+  /* 角标是屏幕上的提示，纸上会变成一颗看不懂的点 */
+  .deck-page:has(> .deck-page-inner[data-overflow])::after {
+    display: none;
+  }
+
+  .deck-pager {
     display: none;
   }
 

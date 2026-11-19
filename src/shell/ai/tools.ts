@@ -44,6 +44,13 @@ export interface DocHost {
   createCopy(workspaceId: string): Promise<{ id: string; name: string }>
   /** 写入当前文档（唯一入口，保证 dirty/草稿/预览/诊断都跟着走） */
   write(text: string): Promise<void>
+  /**
+   * 幻灯片语法规格（`read_deck_spec` 的正文）；当前文件不是幻灯片时返回 `null`。
+   *
+   * 内容由壳层从 `ui/slides/spec.ts` 取——工具层不 import 那个模块（它连着 i18n），
+   * 也不该自己维护一份语法说明。
+   */
+  deckSpec?(): string | null
   /** 按工作区 id 取（W-07：URI 前缀就是工作区 id）；不存在返回 `null` */
   workspace?(id: string): { root: FolderNode; nodes: NodeMap } | null
   /**
@@ -433,6 +440,16 @@ export function toolSchemas(flags: ToolFlags = { script: false, network: true })
 
 function baseSchemas(): ToolSchema[] {
   return [
+    {
+      type: 'function',
+      function: {
+        name: 'read_deck_spec',
+        description:
+          '查看幻灯片（remark 语法）的完整写法说明：分页、备注、页属性，以及每页是独立 Markdown 带来的限制。' +
+          '当前文档还没有分页时返回 not_deck。',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    },
     {
       type: 'function',
       function: {
@@ -1476,6 +1493,13 @@ export function createToolbox(host: DocHost): Toolbox {
           return { ok: false, content: JSON.stringify({ error: 'tool_failed', ...body }) }
         }
         return { ok: true, content: JSON.stringify(body) }
+      }
+
+      if (name === 'read_deck_spec') {
+        // 规格是静态文本，不依赖当前文件；还没分页就直说，别让模型以为工具坏了
+        const spec = host.deckSpec?.()
+        if (!spec) return fail('not_deck', '当前文档还没有分页：用单独一行 --- 把内容分成至少两页。')
+        return { ok: true, content: spec }
       }
 
       const stat = host.stat()
